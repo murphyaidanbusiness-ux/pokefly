@@ -1,0 +1,20 @@
+[project]
+name = "fly-brain-pokemon"
+version = "0.1.0"
+description = "A simulated Drosophila brain plays Pokemon Red through PyBoy."
+requires-python = ">=3.13"
+dependencies = [
+    "pyboy>=2.0",
+    "numpy",
+    "pillow",
+    "opencv-python",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

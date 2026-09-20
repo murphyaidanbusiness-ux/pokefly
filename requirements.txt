@@ -1,0 +1,5 @@
+pyboy>=2.0
+numpy
+pillow
+opencv-python
+pytest

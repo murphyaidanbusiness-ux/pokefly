@@ -1,0 +1,8 @@
+.venv/
+roms/
+__pycache__/
+*.py[cod]
+*.state
+.pytest_cache/
+*.ram
+*.rtc
