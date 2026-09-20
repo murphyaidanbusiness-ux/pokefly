@@ -15,7 +15,7 @@ import sys
 import time
 from collections import deque
 
-from .config import POOL_NAMES, Config
+from .config import POOL_NAMES, Config, map_name
 
 _HOME = "\x1b[H"
 _CLEAR_BELOW = "\x1b[J"
@@ -55,23 +55,24 @@ class Hud:
         width = self.cfg.hud_bar_width
         rate = brain.firing_rate
         map_id, x, y = position
-        peak = max(1.0, float(motor.accum.max()), self.cfg.fire_threshold)
 
         lines = [
             "fly-brain-pokemon",
             f"  step {step:<9d} ticks/s {self._rate:7.1f}   elapsed {now - self.start:7.1f}s",
             f"  firing {rate * 100:5.2f}%  [{_bar(min(rate / 0.30, 1.0), width)}]",
             "",
-            "  motor pools",
+            "  motor pools (excursion above each pool's own baseline, bar = share of its threshold)",
         ]
         for i, name in enumerate(POOL_NAMES):
-            level = float(motor.accum[i])
+            level = float(motor.excursion[i])
             marker = "<" if name in motor.held else " "
-            lines.append(f"    {name:<5s} {level:6.2f} [{_bar(level / peak, width)}] {marker}")
+            lines.append(
+                f"    {name:<5s} {level:7.2f} [{_bar(level / float(motor.thresholds[i]), width)}] {marker}"
+            )
         lines += [
             "",
             f"  action  {(motor_action(motor) or '-'):<8s}   last {' '.join(self.history) or '-'}",
-            f"  map {map_id:<4d} x {x:<4d} y {y:<4d}   battle {'YES' if in_battle else 'no '}"
+            f"  {map_name(map_id)} ({map_id})   x {x:<4d} y {y:<4d}   battle {'YES' if in_battle else 'no '}"
             f"   panics {motor.panic_count}",
             f"  presses {' '.join(f'{n}:{motor.fire_counts[n]}' for n in POOL_NAMES)}",
             "",
@@ -115,7 +116,7 @@ class PlainLog:
         presses = " ".join(f"{n}:{motor.fire_counts[n]}" for n in POOL_NAMES)
         print(
             f"step {step:6d}  {rate:6.1f} tick/s  firing {brain.firing_rate * 100:5.2f}%  "
-            f"map {map_id:3d} x {x:3d} y {y:3d}  battle {int(in_battle)}  "
+            f"{map_name(map_id)} ({map_id}) x {x:3d} y {y:3d}  battle {int(in_battle)}  "
             f"panics {motor.panic_count}  presses {presses}",
             flush=True,
         )

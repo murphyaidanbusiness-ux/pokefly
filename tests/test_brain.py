@@ -1,26 +1,27 @@
 import numpy as np
+import pytest
 
+from conftest import moving_blocks, pixel_noise
 from flybrain.brain import Brain
 from flybrain.config import POOL_NAMES, Config
 from flybrain.connectome import synthetic
 from flybrain.optic_lobe import OpticLobe
 
 STEPS = 600
+CONDITIONS = {"pixel noise": pixel_noise, "moving blocks": moving_blocks}
 
 
 def random_frames(seed: int, steps: int = STEPS):
-    rng = np.random.default_rng(seed)
-    for _ in range(steps):
-        yield rng.integers(0, 256, size=(144, 160), dtype=np.uint8)
+    return pixel_noise(np.random.default_rng(seed), steps)
 
 
-def run(cfg: Config, seed: int = 0):
+def run(cfg: Config, seed: int = 0, frames=None):
     conn = synthetic(n=cfg.n_neurons, k=cfg.lattice_k, rewire_p=cfg.rewire_p, seed=cfg.seed, cfg=cfg)
     lobe = OpticLobe(cfg)
     brain = Brain(conn, cfg)
     rates = []
     pool_totals = dict.fromkeys(POOL_NAMES, 0)
-    for frame in random_frames(seed):
+    for frame in random_frames(seed) if frames is None else frames:
         spikes = brain.step(lobe.step(frame))
         rates.append(float(spikes.mean()))
         for name in POOL_NAMES:
@@ -28,18 +29,25 @@ def run(cfg: Config, seed: int = 0):
     return np.array(rates), pool_totals
 
 
-def test_network_neither_dies_nor_saturates():
-    rates, pools = run(Config())
+@pytest.mark.parametrize("condition", sorted(CONDITIONS))
+def test_network_neither_dies_nor_saturates(condition):
+    """Per-pixel noise is nearly flat after the downsample, so it mostly tests
+    the tonic path; coarse moving blocks survive it and test the ON/OFF motion
+    path. The network has to stay alive under both."""
+    frames = CONDITIONS[condition](np.random.default_rng(0), STEPS)
+    rates, pools = run(Config(), frames=frames)
     mean = rates.mean()
-    assert 0.005 <= mean <= 0.30, f"mean firing rate {mean:.4f} outside [0.5%, 30%]"
+    assert 0.005 <= mean <= 0.30, f"{condition}: mean firing rate {mean:.4f} outside [0.5%, 30%]"
     for name, total in pools.items():
-        assert total > 0, f"motor pool {name} never fired"
+        assert total > 0, f"{condition}: motor pool {name} never fired"
 
 
-def test_it_is_still_alive_at_the_end_not_just_at_the_start():
+@pytest.mark.parametrize("condition", sorted(CONDITIONS))
+def test_it_is_still_alive_at_the_end_not_just_at_the_start(condition):
     """A net that fires hard for 50 steps and then dies would still pass a mean
     check on its own, so look at the tail separately."""
-    rates, _ = run(Config())
+    frames = CONDITIONS[condition](np.random.default_rng(0), STEPS)
+    rates, _ = run(Config(), frames=frames)
     assert 0.005 <= rates[-200:].mean() <= 0.30
 
 

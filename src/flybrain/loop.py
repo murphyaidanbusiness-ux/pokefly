@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from .brain import Brain
-from .config import POOL_NAMES, Config
+from .config import POOL_NAMES, Config, map_name
 from .connectome import Connectome, from_edge_list, synthetic
 from .emulator import Emulator
 from .hud import Hud, PlainLog
@@ -54,6 +54,7 @@ def run_loop(cfg: Config) -> dict:
     step = 0
     positions: set[tuple[int, int, int]] = set()
     position: tuple[int, int, int] = (0, 0, 0)
+    map_order: list[int] = []  # every map id, in the order it was first entered
     started = time.perf_counter()
     try:
         while cfg.max_steps == 0 or step < cfg.max_steps:
@@ -67,6 +68,8 @@ def run_loop(cfg: Config) -> dict:
             spikes = brain.step(current)
             position = emulator.position()
             positions.add(position)
+            if not map_order or map_order[-1] != position[0]:
+                map_order.append(position[0])
             action = motor.update(spikes, position)
             display.note(action)
             display.update(step, brain, motor, position, emulator.in_battle)
@@ -91,6 +94,8 @@ def run_loop(cfg: Config) -> dict:
         "distinct_positions": len(positions),
         "final_position": position,
         "moved": len(positions) > 1,
+        "map_order": map_order,
+        "distinct_maps": sorted(set(map_order)),
     }
     print(
         f"done: {summary['steps']} steps in {summary['seconds']}s "
@@ -107,6 +112,11 @@ def run_loop(cfg: Config) -> dict:
         f"moved={summary['moved']}; final={summary['final_position']}",
         flush=True,
     )
+    distinct = summary["distinct_maps"]
+    print("maps: " + (", ".join(f"{map_name(m)} ({m})" for m in distinct) or "none"), flush=True)
+    route = [f"{m}" for m in map_order]
+    tail = f" ... ({len(route) - 40} more)" if len(route) > 40 else ""
+    print("route (map ids, in order entered): " + (" -> ".join(route[:40]) + tail or "none"), flush=True)
     return summary
 
 

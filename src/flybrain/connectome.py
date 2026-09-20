@@ -68,7 +68,50 @@ def _ring_lattice_edges(n: int, k: int, rewire_p: float, rng: np.random.Generato
     key = pre * n + post
     _, first = np.unique(key, return_index=True)
     first.sort()
-    return pre[first], post[first]
+
+    # Position on the ring -> neuron id. Relabelling leaves the graph a
+    # Watts-Strogatz graph (same degree, clustering and path length), but
+    # without it the ring is aligned with the functional layout: the sensory
+    # block and the motor block are contiguous and both are excitatory by
+    # construction, so each becomes a self-exciting clique. Measured before
+    # this was added, the UP pool took +2.78 of pure excitation from the other
+    # motor neurons and saturated at 20% whatever was on screen.
+    order = rng.permutation(n)
+    return order[pre[first]], order[post[first]]
+
+
+def _balance_inhibition(weights: np.ndarray, strength: float) -> None:
+    """Inhibitory synaptic scaling: give every neuron the same net incoming
+    lattice drive, in place.
+
+    With 20 incoming synapses drawn at random and a 3.5:1 magnitude ratio
+    between an inhibitory and an excitatory one, how excitable a neuron is
+    comes down mostly to how many inhibitory partners it happened to draw.
+    Across a 24-neuron motor pool that lottery does not average out: measured
+    without this, a pool's firing rate against its opposite ranged from 0.80 to
+    2.20 across seeds, correlating +0.85 to +0.91 with the gap in their
+    incoming weight sums, and the crossed inhibition then amplified whichever
+    way the dice fell. That intrinsic difference is the same size as the
+    difference the retinotopic pathway is supposed to produce, so the fly's
+    turning bias was the connectome's draw rather than what was on screen.
+
+    Only the magnitudes of the inhibitory inputs move, never a sign, so Dale's
+    law is untouched. `strength` interpolates: 0.0 leaves the raw draw alone.
+    """
+    if strength <= 0.0:
+        return
+    excitatory = np.clip(weights, 0.0, None).sum(axis=1)
+    inhibitory = np.clip(weights, None, 0.0).sum(axis=1)  # negative
+    target = float((excitatory + inhibitory).mean())
+    scale = np.ones_like(excitatory)
+    adjustable = inhibitory < -1e-9
+    scale[adjustable] = np.clip((excitatory[adjustable] - target) / -inhibitory[adjustable], 0.25, 4.0)
+    scale = (1.0 + strength * (scale - 1.0)).astype(np.float32)
+    for start in range(0, weights.shape[0], 512):  # in blocks, to avoid an (n, n) temporary
+        block = weights[start : start + 512]
+        negative = np.minimum(block, 0.0)
+        block -= negative
+        block += negative * scale[start : start + 512, None]
 
 
 def _assign_signs(n: int, protected: np.ndarray, fraction: float, rng: np.random.Generator) -> np.ndarray:
@@ -90,10 +133,18 @@ def _add_bias_pathways(
     pools: dict[str, np.ndarray],
     rng: np.random.Generator,
 ) -> None:
-    """Sensory -> interneuron -> motor pool, one sparse pathway per region.
+    """Sensory -> interneuron -> motor pool, one wide-field pathway per region.
 
     Deliberately not a direct sensory->motor wire: the signal has to propagate
     through the hidden network, so the recurrent state still shapes behaviour.
+
+    Each interneuron pools `bias_fan_in` channels of its region, the way a
+    lobula plate tangential cell pools a whole hemifield, and its incoming
+    lattice weights are attenuated by `bias_lattice_scale`. Without that
+    attenuation the pathway does not work at all: the interneuron needs a total
+    input around `leak * v_thresh` to sit near threshold, while its 20 lattice
+    synapses fluctuate several times that, so the regional signal is buried and
+    every pool responds identically whatever is on screen.
     """
     regions = region_masks(cfg.retina_size)
     picks = rng.choice(hidden_exc, size=(len(_REGION_TO_POOL), cfg.bias_interneurons), replace=False)
@@ -101,6 +152,7 @@ def _add_bias_pathways(
         scale = cfg.center_bias_scale if region == "centre" else 1.0
         channels = regions[region]
         inter = picks[row]
+        weights[inter] *= cfg.bias_lattice_scale
         for neuron in inter:
             fan = rng.choice(channels, size=min(cfg.bias_fan_in, channels.size), replace=False)
             weights[neuron, fan] += cfg.w_bias_in * scale * signs[fan]
@@ -155,6 +207,7 @@ def synthetic(n: int = 2000, k: int = 20, rewire_p: float = 0.1, seed: int = 0, 
     magnitude = np.where(signs[pre] > 0, cfg.w_exc, cfg.w_inh)
     weights = np.zeros((n, n), dtype=np.float32)
     weights[post, pre] = magnitude * signs[pre]
+    _balance_inhibition(weights, cfg.inhibitory_balance)
 
     _add_bias_pathways(weights, cfg, signs, hidden_exc, pools, rng)
     _add_crossed_inhibition(weights, cfg, hidden_inh, pools, rng)

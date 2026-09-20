@@ -21,6 +21,39 @@ DIRECTIONS: frozenset[str] = frozenset({"UP", "DOWN", "LEFT", "RIGHT"})
 # one of them may overlap with a direction.
 ACTIONS: frozenset[str] = frozenset({"A", "B", "START"})
 
+# Pokemon Red map ids, for the HUD and the run log. Only ids worth being sure
+# about are listed; anything else is shown as its raw number rather than
+# guessed at. 0x00, 0x25 and 0x26 are confirmed against this cartridge; the
+# rest are the standard Gen 1 map constants and have not been seen in a run
+# here yet. Note that this address reads 0 before the game has written to it,
+# so a "Pallet Town" at the very start of a run from a cold boot is
+# uninitialised RAM, not a place the fly has been.
+MAP_NAMES: dict[int, str] = {
+    0x00: "Pallet Town",
+    0x01: "Viridian City",
+    0x02: "Pewter City",
+    0x03: "Cerulean City",
+    0x04: "Lavender Town",
+    0x05: "Vermilion City",
+    0x06: "Celadon City",
+    0x07: "Fuchsia City",
+    0x08: "Cinnabar Island",
+    0x09: "Indigo Plateau",
+    0x0A: "Saffron City",
+    0x0C: "Route 1",
+    0x0D: "Route 2",
+    0x25: "Red's house 1F",
+    0x26: "Red's house 2F",
+    0x27: "Blue's house",
+    0x28: "Oak's Lab",
+}
+
+
+def map_name(map_id: int) -> str:
+    """The map's name if it is one of the ids above, else the raw number."""
+    return MAP_NAMES.get(map_id, f"map {map_id}")
+
+
 # PyBoy's own button names, keyed by pool name.
 BUTTON_FOR_POOL: dict[str, str] = {
     "UP": "up",
@@ -70,21 +103,37 @@ class Config:
     inhibitory_fraction: float = 0.20  # share of neurons that are inhibitory (Dale)
     pool_size: int = 24  # neurons per motor pool, 7 pools at the end
     w_exc: float = 0.170  # magnitude of every excitatory synapse
-    w_inh: float = 0.595  # magnitude of every inhibitory synapse (stored negative).
+    inhibitory_balance: float = 1.0  # inhibitory synaptic scaling: how far each neuron's
+    # incoming inhibition is rescaled to give every
+    # neuron the same net lattice drive. 0.0 leaves the
+    # raw random draw, which makes a pool's excitability
+    # a lottery that swamps the retinotopic signal.
+    w_inh: float = 0.595  # magnitude of every inhibitory synapse before balancing
     # Ratio to w_exc sets the excitation/inhibition balance:
     # raise to kill runaway activity, lower if the net dies.
 
     # retinotopic bias pathways: sensory -> interneuron -> motor pool
-    bias_interneurons: int = 14  # interneurons per pathway
-    bias_fan_in: int = 40  # sensory channels each of them samples from its region
-    w_bias_in: float = 0.030  # sensory -> bias interneuron
-    w_bias_out: float = 0.060  # bias interneuron -> motor pool
+    bias_interneurons: int = 24  # interneurons per pathway
+    bias_fan_in: int = 128  # sensory channels each of them pools from its region
+    bias_lattice_scale: float = 0.15  # how much of the ordinary lattice input a bias
+    # interneuron keeps. These are wide-field visual
+    # cells; at 1.0 their 20 lattice synapses fluctuate
+    # several times harder than the whole regional
+    # signal and the retinotopy does nothing at all.
+    w_bias_in: float = 0.015  # sensory -> bias interneuron, per pooled channel
+    w_bias_out: float = 0.055  # bias interneuron -> motor pool. Much above this the
+    # pools saturate and selectivity inverts.
     center_bias_scale: float = 0.45  # the centre -> A pathway is deliberately weaker
 
     # crossed inhibition between opposing pools, via inhibitory interneurons
     cross_inh_neurons: int = 10  # interneurons per opposing pair direction
     w_cross_in: float = 0.055  # pool -> crossed inhibitory interneuron
-    w_cross_out: float = 0.200  # that interneuron -> the opposing pool (negative)
+    w_cross_out: float = 0.120  # that interneuron -> the opposing pool (negative).
+    # This is the amplifier that turns a 1.2x difference
+    # in regional drive into a clear turning preference.
+    # Ten interneurons land on each pool, so at 0.35 and
+    # above the pair latches and whichever side wins
+    # first stays won whatever the screen does.
 
     # ---- brain ----------------------------------------------------------
     leak: float = 0.10  # dt/tau in the LIF update; 0.10 = membrane tau of 10 steps
@@ -95,14 +144,28 @@ class Config:
     rate_smoothing: float = 0.05  # EMA factor for the firing rate the HUD shows
 
     # ---- motor ----------------------------------------------------------
-    accum_decay: float = 0.85  # leak of each pool's spike accumulator per tick
-    fire_threshold: float = 8.0  # accumulator level that triggers a button press.
+    accum_decay: float = 0.85  # leak of each pool's fast spike accumulator per tick
+    baseline_rate: float = 0.0033  # EMA rate of each pool's slow running baseline, so
+    # tau is about 300 ticks. The baseline is the level
+    # the pool's recent average drive would hold the
+    # accumulator at, and it is computed from the spike
+    # counts rather than from the accumulator, so a pool
+    # firing cannot drag its own baseline around.
+    adaptation: float = 1.0  # how much of the baseline is subtracted before the
+    # threshold test. 1.0 = a pool fires only when it is
+    # more active than it usually is; 0.0 = the absolute
+    # level test, which saturates against the cooldown.
+    fire_threshold: float = 6.4  # excursion above baseline that triggers a press.
     # Raise for a calmer fly, lower for a twitchier one.
+    threshold_scale: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 1.0, 1.25, 2.2)
+    # Per-pool multiplier on fire_threshold, in POOL_NAMES
+    # order. START is a grooming bout and should be rare,
+    # and B (withdraw) sits above A (interact).
     hold_frames: int = 4  # a press is held for exactly this many ticks
     cooldown_ticks: int = 8  # per-button silence after a release, so the game
     # registers distinct presses
-    panic_after: int = 200  # ticks with no position and no action change before
-    # the anti-stuck reflex fires
+    panic_after: int = 200  # ticks with the position unchanged, or with no button
+    # pressed at all, before the anti-stuck reflex fires
     panic_min_buttons: int = 6  # shortest panic burst
     panic_max_buttons: int = 10  # longest panic burst
     panic_direction_weight: float = 3.0  # relative draw weight of UP/DOWN/LEFT/RIGHT

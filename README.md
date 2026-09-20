@@ -10,10 +10,10 @@ on the right pushes the right-turn pool, and so on. It has no memory of the
 game, no reward, no learning, and no idea what a Pokemon is. Watch it for the
 behaviour, not the progress.
 
-That said, it does get somewhere. In a 30,000-step headless run from a cold
-boot it pressed through the intro and the name entry and was walking around the
-overworld by step ~14,800, changing maps by step ~21,000. See
-"What actually happened" below.
+That said, it does get somewhere. In a 60,000-step headless run from a cold
+boot it pressed through the intro and the name entry, walked around Red's
+bedroom, found the stairs, and went up and down them eleven times. It never got
+out of the house. See "What actually happened" below.
 
 ## Setup
 
@@ -75,7 +75,28 @@ lattice of `k=20` outgoing edges per neuron, each rewired with probability 0.1,
 no self loops. Dale's law holds: every outgoing synapse of a neuron has one
 sign. 20% of neurons are inhibitory, drawn from the hidden population, so the
 sensory neurons and the motor pools stay excitatory and their pathways stay
-readable. Index layout:
+readable.
+
+Two things about the lattice are not obvious and both were found by measurement,
+not by design:
+
+- **The ring is built over positions, then a seeded permutation maps position to
+  neuron id.** That leaves it the same Watts-Strogatz graph, but without it the
+  ring is aligned with the functional layout below, and since the sensory block
+  and the motor block are contiguous and both excitatory, each becomes a
+  self-exciting clique. Measured: the UP pool was taking +2.78 of pure
+  excitation from the other motor neurons and saturating at 20% whatever was on
+  screen.
+- **Inhibitory synaptic scaling.** Each neuron's incoming inhibition is rescaled
+  so every neuron gets the same net lattice drive. With 20 incoming synapses and
+  a 3.5:1 inhibitory-to-excitatory magnitude ratio, excitability otherwise comes
+  down to how many inhibitory partners a neuron happened to draw, and across a
+  24-neuron pool that does not average out. Measured without it, a pool's rate
+  against its opposite ran from 0.80 to 2.20 across seeds, correlating +0.85 to
+  +0.91 with the gap in their incoming weight sums. Only magnitudes move, never
+  a sign, so Dale's law is untouched.
+
+Index layout:
 
 ```
 0 .. 511                  sensory
@@ -93,13 +114,21 @@ Two extra sets of pathways sit on top of the lattice:
 - **Retinotopic bias.** Motion in the left half of the visual field drives the
   LEFT pool, the right half drives RIGHT, top drives UP, bottom drives DOWN, and
   the centre weakly drives A. These are not direct sensory-to-motor wires: each
-  runs through a handful of hidden interneurons that sample 40 channels of their
-  region, so the signal still has to propagate through the recurrent network.
+  runs through 24 hidden interneurons that pool 128 channels of their region,
+  the way a lobula plate tangential cell pools a hemifield, so the signal still
+  has to propagate through the recurrent network. Those interneurons keep only
+  15% of their ordinary lattice input (`bias_lattice_scale`): a neuron needs a
+  total input near `leak * v_thresh` to sit at threshold, while 20 lattice
+  synapses fluctuate several times that, so at full strength the regional signal
+  is buried and every pool responds identically whatever is on screen.
 - **Crossed inhibition.** UP inhibits DOWN and LEFT inhibits RIGHT (both ways),
   routed through real inhibitory interneurons rather than a negative
   pool-to-pool wire, so the pools themselves stay excitatory and Dale's law is
-  not bent to get the mutual inhibition. This is what makes the fly commit to a
-  direction instead of dithering.
+  not bent to get the mutual inhibition. This is the amplifier that turns a 1.2x
+  difference in regional drive into a clear turning preference. It is also the
+  most dangerous number in the file: at roughly three times its current strength
+  the pair latches and whichever side wins first stays won whatever the screen
+  does.
 
 **Brain** (`brain.py`). Leaky integrate-and-fire, fully vectorized float32, one
 step per emulator tick:
@@ -115,24 +144,46 @@ neurons that spiked last step, not a full matmul; spiking is a few percent, so
 this is much cheaper. `W` is held in Fortran order so those columns are
 contiguous.
 
-**Motor** (`motor.py`). Each pool has a leaky accumulator of its spike count.
-Crossing `fire_threshold` presses that button for exactly 4 ticks, releases it,
-and puts it in an 8-tick cooldown so the game registers distinct presses; the
-accumulator resets on fire. At most one direction is held at a time (the
-strongest accumulator wins) and at most one of A/B/START, but an action may
-overlap a direction.
+**Motor** (`motor.py`). Each pool keeps two running averages of its own spike
+count: a fast leaky accumulator (tau of a few ticks) and a slow baseline (tau of
+about 300 ticks) holding the level its recent average drive would sustain. A
+button fires when the **excursion**, `accum - baseline`, crosses
+`fire_threshold * threshold_scale[pool]`. So a press means "this pool is more
+active than it usually is", which is what visual motion and network fluctuations
+produce, rather than "this pool is active", which every pool is, all the time.
 
-The anti-stuck reflex: if neither `(map_id, x, y)` nor the last button fired has
-changed for 200 ticks, the fly startles. A burst of 6 to 10 random buttons
-(weighted toward directions and A) is queued and played out one at a time, and a
-transient current pulse is injected into the brain so the startle shows on the
-HUD as a firing-rate jump.
+That adaptation is the whole point. On an absolute threshold every pool sat far
+above it and each button fired once per hold plus cooldown forever, so the
+cooldown timer was playing the game and START reopened the menu every 12 ticks.
+The baseline is computed from the spike counts and not from the accumulator, so
+resetting the accumulator on a fire cannot drag its own baseline down after it
+and stall the pool. `threshold_scale` makes START rare (2.2x) and B a little
+above A (1.25x).
+
+The press itself: held for exactly 4 ticks, released, then an 8-tick per-button
+cooldown so the game registers distinct presses. At most one direction is held
+at a time (the largest margin over its own threshold wins) and at most one of
+A/B/START, but an action may overlap a direction.
+
+The anti-stuck reflex: the fly startles if `(map_id, x, y)` has not changed for
+200 ticks, **or** if no button at all has been pressed for 200 ticks. A burst of
+6 to 10 random buttons (weighted toward directions and A) is queued and played
+out one at a time, and a transient current pulse is injected into the brain so
+the startle shows on the HUD as a firing-rate jump. Both counters restart from
+zero afterwards. It fires during long dialogues and the intro, which is the
+intent: a startled fly mashing its way out of a text box.
 
 **HUD** (`hud.py`). In-place ANSI redraw every 6 ticks: step count, ticks/sec,
-smoothed firing rate with a bar, the seven pool accumulators with bars, the
-button currently held, the last 8 actions, map id, X, Y, the in-battle flag and
-the panic count. `--no-hud` prints one line per second instead, which is what
-you want when piping to a file.
+smoothed firing rate with a bar, each pool's excursion above its own baseline as
+a share of its own threshold, the button currently held, the last 8 actions, the
+map name and id, X, Y, the in-battle flag and the panic count. `--no-hud` prints
+one line per second instead, which is what you want when piping to a file.
+
+Map ids are named from a small table in `config.py` covering Pallet Town, the
+ten other towns and cities, Routes 1 and 2, Red's house and Oak's Lab. Anything
+else prints as its raw number rather than a guess. Note that the map-id address
+reads 0 before the game writes to it, so a "Pallet Town" at the very start of a
+cold-boot run is uninitialised RAM, not a place the fly has been.
 
 Every tunable number lives in `config.py`, one frozen dataclass, with a comment
 per number. Nothing else in the package hard-codes a magic number.
@@ -144,62 +195,81 @@ Python 3.13, numpy 2.5.3):
 
 | network size | ms per brain step | headroom at 60 Hz |
 |---|---|---|
-| n = 2000 | **0.41 ms** | 40x |
-| n = 5000 | **0.83 ms** | 20x |
+| n = 2000 | **0.23 ms** | 72x |
+| n = 5000 | **0.45 ms** | 37x |
 
 Whole loop including emulation, the frame read and the motor logic: about
-1,550 to 1,700 ticks/s headless and uncapped, so roughly 26x real time.
-Windowed it holds exactly 60.0 ticks/s, which is the real-time cap, not a limit
-of the brain.
+1,550 to 1,950 ticks/s headless and uncapped, so roughly 26x to 32x real time.
+Windowed it holds 60.1 ticks/s, which is the real-time cap, not a limit of the
+brain.
 
 ## What actually happened
 
 `run.py --headless --uncapped --no-hud --max-steps 3000` from a cold boot:
 
 ```
-done: 3000 steps in 1.82s (1645.6 ticks/s), firing 8.90%
-presses: UP=213 DOWN=184 LEFT=38 RIGHT=226 A=249 B=249 START=250  total=1409  panics=0
+done: 3000 steps in 1.94s (1547.1 ticks/s), firing 10.59%
+presses: UP=99 DOWN=85 LEFT=87 RIGHT=98 A=66 B=26 START=7  total=468  panics=11
 positions: 2 distinct (map_id, x, y); moved=True; final=(38, 3, 6)
+maps: Pallet Town (0), Red's house 2F (38)
+route (map ids, in order entered): 0 -> 38
 ```
 
 3000 ticks is 50 seconds of game time, which is not enough to clear the intro,
-the title screen, Oak's speech and name entry. The two "distinct positions"
-there are the boot value `(0, 0, 0)` and whatever the RAM settles to; that is
-not the player walking.
+the title screen, Oak's speech and name entry. The leading map 0 there is the
+uninitialised RAM value, not Pallet Town.
 
-30,000 ticks is a different story:
+60,000 ticks, sixteen minutes of game time:
 
 ```
-step  13140  ... map  38 x   3 y   6 ...
-step  14776  ... map  38 x   7 y   3 ...
-step  21064  ... map  37 x   7 y   1 ...
-done: 30000 steps in 19.24s (1559.6 ticks/s), firing 9.45%
-presses: UP=2125 DOWN=1818 LEFT=452 RIGHT=2271 A=2495 B=2495 START=2497  total=14153  panics=0
-positions: 34 distinct (map_id, x, y); moved=True; final=(37, 7, 3)
+done: 60000 steps in 31.1s (1929.4 ticks/s), firing 8.64%
+presses: UP=1030 DOWN=977 LEFT=935 RIGHT=832 A=309 B=52 START=11  total=4146  panics=28
+positions: 60 distinct (map_id, x, y); moved=True; final=(37, 3, 3)
+maps: Pallet Town (0), Red's house 1F (37), Red's house 2F (38)
+route (map ids, in order entered): 0 -> 38 -> 37 -> 38 -> 37 -> 38 -> 37 -> 38 -> 37 -> ...
 ```
 
-By step ~14,800 the coordinates are changing every few hundred ticks, and by
-step ~21,000 the map id changes, so the fly is out of the house and walking
-between maps. `LEFT` is pressed a fifth as often as `RIGHT`, which is the
-retinotopic bias and the crossed inhibition doing their job on whatever was
-moving on screen, not a bug.
+The fly cleared the intro and the name entry, explored Red's bedroom, found the
+stairs and went up and down them eleven times. **It never left the house.**
 
-The panic reflex fired zero times in both runs: the fly is active enough that
-either the position or the chosen button changes inside any 200-tick window.
+Where it spent its time, from the same run:
+
+| map | ticks | tiles seen | x range | y range |
+|---|---|---|---|---|
+| Red's house 2F | 50,812 | 42 | 0 to 7 | 1 to 7 |
+| Red's house 1F | 8,334 | 17 | 2 to 7 | 1 to 4 |
+
+Upstairs it covered essentially the whole room. Downstairs it only ever reached
+y=4, and the front door is at the bottom of that room. The reason is in those
+two tables rather than in the press log, which is close to even: the staircase
+drops the fly into the top-right corner of 1F (its most-visited tile there,
+(7,1), 1,161 ticks), and an unbiased walker that starts next to the staircase
+finds the staircase again long before it finds a single door tile at the far
+end. Each visit to 1F averaged about 750 ticks, twelve seconds, which is not
+long enough to cross the room by chance.
+
+Nothing is going to fix that except a goal, and this fly does not have one.
+
+The panic reflex fired 11 times in the first 3,000 ticks and 28 times over
+60,000. That distribution is the point: it fires constantly during the intro and
+the long text boxes, where the player cannot move, and rarely once the fly is
+walking around a room.
 
 ## Honest expectations
 
 - It will not beat the game. It has no goal, no reward and no memory.
-- It mashes. The pool accumulators sit well above `fire_threshold` most of the
-  time, so the press rate is set by the 4-tick hold plus the 8-tick cooldown
-  rather than by the threshold. Some button is nearly always held. Raise
+- It presses about one button every 14 ticks, and no single button runs at more
+  than 40% of the rate its hold plus cooldown would allow. Raise
   `fire_threshold` in `config.py` for a calmer fly.
-- Direction choice is real but weak: it follows which half of the screen moved,
-  filtered through a recurrent net that adds a lot of its own noise.
-- Firing rate sits around 8 to 9% across black screens, bright screens, static
-  screens and random noise. A test pins it inside 0.5% to 30% and requires every
-  motor pool to fire; the numbers in `config.py` were tuned until that passed,
-  not the other way round.
+- Direction choice is real: a bright block moving inside one third of the screen
+  biases the matching pool by 2.3x to 3.9x over its opposite, measured through
+  the whole chain in `tests/test_behaviour.py`. In actual gameplay the screen is
+  far less cooperative than that test stimulus and the directional counts come
+  out close to even.
+- Firing rate sits around 8 to 10% across black screens, bright screens, static
+  screens, per-pixel noise and coarse moving blocks. A test pins it inside 0.5%
+  to 30% on the last two and requires every motor pool to fire; the numbers in
+  `config.py` were tuned until that passed, not the other way round.
 
 ## Tests
 
@@ -207,9 +277,16 @@ either the position or the chosen button changes inside any 200-tick window.
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-37 tests, all headless. They pass with no ROM present except
+53 tests, all headless, about 15 seconds. They pass with no ROM present except
 `tests/test_integration.py::test_600_headless_ticks_through_the_real_loop`,
 which skips when `roms/pokemon_red.gb` is absent.
+
+`tests/test_behaviour.py` is the one that matters most: it runs the whole optic
+lobe to brain to motor chain with a fake button sink and holds it to two things
+that no unit test can see. No button may exceed 40% of the rate its hold plus
+cooldown allows, and a bright block wandering inside one third of the screen has
+to bias the matching pool by at least 1.5x over its opposite, in all four
+directions, summed over three seeds.
 
 ## Choices the spec left open
 
@@ -228,6 +305,15 @@ which skips when `roms/pokemon_red.gb` is absent.
   the same tick, preferring the direction. Per-button counts are tracked
   separately in `MotorBridge.fire_counts`, which is what the HUD and the run
   summary report.
+- The ring lattice is built over positions and permuted onto neuron ids, and
+  each neuron's incoming inhibition is rescaled to equalise net drive. Both are
+  additions to the spec's connectome description, both are explained above, and
+  both were added because the retinotopy measurably did not work without them.
+- With no position reading at all (a test harness rather than the game) the
+  anti-stuck reflex's position counter does not run, because nothing is known
+  about being stuck. Only the idle counter can fire it there.
+- The map-name table covers only ids worth being sure about. Everything else
+  prints as a number.
 
 ## Licence and dependencies
 

@@ -81,6 +81,49 @@ def test_rejects_out_of_range_n():
         synthetic(n=6000)
 
 
+def test_inhibitory_balancing_equalises_incoming_drive():
+    """Without it, how excitable a neuron is comes down to how many inhibitory
+    partners it happened to draw, and across a 24-neuron pool that does not
+    average out."""
+
+    def pool_gaps(cfg):
+        gaps = []
+        for seed in range(4):
+            conn = synthetic(n=2000, seed=seed, cfg=cfg)
+            drive = {
+                name: conn.weights[conn.motor_pools[name]].sum(axis=1).mean() for name in ("UP", "DOWN", "LEFT", "RIGHT")
+            }
+            gaps += [abs(drive["UP"] - drive["DOWN"]), abs(drive["LEFT"] - drive["RIGHT"])]
+        return float(np.mean(gaps))
+
+    balanced = pool_gaps(Config())
+    raw = pool_gaps(Config(inhibitory_balance=0.0))
+    assert balanced < raw / 4, f"opposing pools still differ by {balanced:.3f} of drive (raw {raw:.3f})"
+
+    conn = synthetic(n=2000, seed=11)
+    column_positive = (conn.weights > 0).any(axis=0)
+    column_negative = (conn.weights < 0).any(axis=0)
+    assert not np.any(column_positive & column_negative)  # signs untouched
+
+
+def test_the_lattice_is_not_aligned_with_the_functional_layout():
+    """The sensory block and the motor block are contiguous and both are
+    excitatory, so a ring laid out in index order makes each a self-exciting
+    clique. The permutation is what stops that."""
+    conn = synthetic(n=2000, seed=12)
+    within = conn.weights[np.ix_(conn.motor_idx, conn.motor_idx)].sum(axis=1).mean()
+    assert within < 0.5, f"the motor pools feed themselves {within:.2f} of weight"
+
+
+def test_map_names_cover_the_confirmed_ids():
+    from flybrain.config import map_name
+
+    assert map_name(0x00) == "Pallet Town"
+    assert map_name(0x25) == "Red's house 1F"
+    assert map_name(0x26) == "Red's house 2F"
+    assert map_name(0xF3) == "map 243"  # unknown ids are shown raw, never guessed
+
+
 def test_edge_list_loader(tmp_path):
     csv_path = tmp_path / "tiny.csv"
     csv_path.write_text(
