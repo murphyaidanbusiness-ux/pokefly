@@ -1,5 +1,8 @@
 .venv/
 roms/
+brains/
+states/
+runs/
 __pycache__/
 *.py[cod]
 *.state

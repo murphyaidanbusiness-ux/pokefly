@@ -54,6 +54,35 @@ def map_name(map_id: int) -> str:
     return MAP_NAMES.get(map_id, f"map {map_id}")
 
 
+# A rough ordering of the early game, for the one word "furthest" in a training
+# log row. It is a heuristic and it is only meant to cover the stretch this
+# project can reach: bedroom, downstairs, outside, the two Pallet buildings,
+# Route 1, Viridian. Ties are deliberate (the lab and the rival's house are
+# both "in Pallet, indoors"). A map that is not listed ranks -1 and is reported
+# by id rather than folded into this scale.
+MAP_PROGRESS: dict[int, int] = {
+    0x26: 0,  # Red's house 2F, where an episode starts
+    0x25: 1,  # Red's house 1F
+    0x00: 2,  # Pallet Town: out of the house, the primary acceptance
+    0x27: 3,  # Blue's house
+    0x28: 3,  # Oak's Lab
+    0x0C: 4,  # Route 1
+    0x01: 5,  # Viridian City
+    0x0D: 6,  # Route 2
+    0x02: 7,  # Pewter City
+}
+
+
+def map_progress(map_id: int) -> int:
+    return MAP_PROGRESS.get(map_id, -1)
+
+
+def furthest_map(map_ids) -> int | None:
+    """The most advanced of the maps given, by `MAP_PROGRESS`, or None."""
+    ranked = [m for m in map_ids if map_progress(m) >= 0]
+    return max(ranked, key=map_progress) if ranked else None
+
+
 # PyBoy's own button names, keyed by pool name.
 BUTTON_FOR_POOL: dict[str, str] = {
     "UP": "up",
@@ -179,11 +208,91 @@ class Config:
     hud_history: int = 8  # actions kept in the "last actions" strip
     hud_bar_width: int = 20  # characters in an activation bar
 
+    # ---- mushroom body --------------------------------------------------
+    # The learned part. Static 16x16 luminance -> sparse Kenyon cells ->
+    # one MBON per motor pool plus a value readout, trained by a TD error.
+    n_kc: int = 2000  # Kenyon cells in the expansion layer
+    kc_claws: int = 7  # input pixels each KC samples. 7 is the real number in
+    # the fly; more claws means a less selective code.
+    kc_active_frac: float = 0.05  # APL-style global inhibition: only this share of
+    # KCs is active per tick, binary. Lower = sparser,
+    # more selective, slower to generalise.
+    mbon_gain: float = 0.060  # peak current a fully saturated MBON injects into
+    # every neuron of its pool. Sized against the
+    # retinotopic pathway (w_bias_out 0.055 x 24 cells):
+    # enough to tilt a pool, never enough to pin it.
+    mbon_scale: float = 1.0  # divisor inside the tanh. mbon is a sum over ~100
+    # active KCs, so without this the squash saturates
+    # after a handful of updates and the bias is binary.
+    gamma: float = 0.997  # TD discount PER TICK. 0.997 is a horizon of ~330
+    # ticks, about 5 seconds of game time.
+    lambda_actor: float = 0.96  # actor eligibility decay per tick (tau ~25 ticks).
+    # Must span press -> the game finishing the step
+    # that press caused, which is 10 to 20 ticks.
+    lambda_critic: float = 0.98  # critic eligibility decay per tick (tau ~50)
+    lr_actor: float = 0.0020  # actor learning rate. See the arithmetic below: the
+    # effective step on an MBON is roughly this times
+    # `n_kc_active` times the trace's own sum.
+    lr_critic: float = 0.00005  # critic learning rate. This looks absurdly small and
+    # it is not. An update writes to all `n_kc_active`
+    # = 100 active KCs at once, and a critic trace whose
+    # KC keeps being active saturates at 1/(1-lambda) =
+    # 50, so the step on the value readout is about
+    # 100 * 50 = 5000 times this number. At the obvious
+    # 0.002 the value estimate oscillates by tens per
+    # tick, the TD error is then noise, and the actor
+    # random-walks into its clip with the wrong sign:
+    # measured, that gave LEFT the MOST negative weight
+    # in the context where LEFT was the only thing that
+    # paid. This is the single most sensitive number in
+    # the learning half of the project.
+    w_actor_clip: float = 0.050  # per-synapse bound on the KC->MBON weights. 100 active
+    # KCs, so a saturated MBON is +-5 and the tanh below
+    # is hard over. Raise this and nothing changes; lower
+    # it and the bias goes gradual.
+    w_critic_clip: float = 0.200  # per-synapse bound on the KC->value weights, so the
+    # value estimate is bounded by +-20. It has to be
+    # above the real return (about 14 in the two-context
+    # test world) or the critic sits on its clip and the
+    # TD error never settles.
+    reward_scale: float = 1.0  # every reward part is divided by this before the TD
+    # error, for keeping the critic in a sane range
+
+    # ---- reward ---------------------------------------------------------
+    # Every address below was checked against the pret/pokered symbol file
+    # (github.com/pret/pokered, `symbols` branch, pokered.sym, read 2026-09-20).
+    # The pokered symbol name is in the comment. Nothing here is from memory.
+    party_count_addr: int = 0xD163  # wPartyCount
+    party_level_addr: int = 0xD18C  # wPartyMon1Level
+    party_stride: int = 0x2C  # wPartyMon2Level (0xD1B8) - wPartyMon1Level
+    badges_addr: int = 0xD356  # wObtainedBadges, one bit per badge
+    event_flags_addr: int = 0xD747  # wEventFlags, start of the flag array
+    event_flags_end: int = 0xD887  # exclusive: the next symbol is wGrassRate
+    player_name_addr: int = 0xD158  # wPlayerName, first character
+    joy_ignore_addr: int = 0xCD6B  # wJoyIgnore, nonzero while the engine is
+    # swallowing input (cutscene, map transition)
+
+    reward_tile: float = 1.0  # first visit to a (map, x, y) this episode
+    reward_map: float = 5.0  # first entry to a map id this episode. A second
+    # visit pays nothing, so the stairs cannot be farmed.
+    reward_event: float = 3.0  # per newly set event-flag bit
+    reward_level: float = 5.0  # per level gained across the party
+    reward_badge: float = 50.0  # per new badge
+
+    # ---- training -------------------------------------------------------
+    train_ticks: int = 2_000_000  # total tick budget for `train.py`
+    episode_ticks: int = 20_000  # ticks per episode
+    eval_every: int = 10  # episodes between learning-off evaluation episodes
+    checkpoint_every: int = 10  # episodes between brain checkpoints
+    brain_path: Path = Path("brains/latest.npz")
+    start_state_path: Path = Path("states/bedroom.state")
+    train_log_path: Path = Path("runs/train.csv")
+
     # ---- emulator -------------------------------------------------------
-    map_id_addr: int = 0xD35E  # Pokemon Red: current map id
-    player_y_addr: int = 0xD361  # Pokemon Red: player Y tile
-    player_x_addr: int = 0xD362  # Pokemon Red: player X tile
-    in_battle_addr: int = 0xD057  # Pokemon Red: nonzero while in a battle
+    map_id_addr: int = 0xD35E  # Pokemon Red: current map id (wCurMap)
+    player_y_addr: int = 0xD361  # Pokemon Red: player Y tile (wYCoord)
+    player_x_addr: int = 0xD362  # Pokemon Red: player X tile (wXCoord)
+    in_battle_addr: int = 0xD057  # Pokemon Red: nonzero in battle (wIsInBattle)
 
     # ---- derived --------------------------------------------------------
     pool_names: tuple[str, ...] = field(default=POOL_NAMES)
@@ -196,3 +305,8 @@ class Config:
     @property
     def n_motor(self) -> int:
         return self.pool_size * len(self.pool_names)
+
+    @property
+    def n_kc_active(self) -> int:
+        """How many Kenyon cells survive the APL inhibition each tick."""
+        return max(1, int(round(self.kc_active_frac * self.n_kc)))

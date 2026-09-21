@@ -1,0 +1,85 @@
+"""Training entrypoint. `python train.py` with no arguments trains from the
+bedroom savestate, making that savestate first if it is missing.
+
+No install step: src/ goes on sys.path here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from flybrain.config import Config  # noqa: E402
+from flybrain.training import evaluate, learning_curve, make_start_state, train  # noqa: E402
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train the fly's mushroom body on Pokemon Red.")
+    parser.add_argument("--rom", type=Path, default=ROOT / "roms" / "pokemon_red.gb")
+    parser.add_argument("--ticks", type=int, default=Config.train_ticks, help="total tick budget")
+    parser.add_argument("--episode-ticks", type=int, default=Config.episode_ticks)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--neurons", type=int, default=2000)
+    parser.add_argument("--out", type=Path, default=ROOT / "brains" / "latest.npz")
+    parser.add_argument("--resume", action="store_true", help="continue from the brain at --out")
+    parser.add_argument("--eval-every", type=int, default=Config.eval_every, help="episodes between eval episodes")
+    parser.add_argument("--log", type=Path, default=ROOT / "runs" / "train.csv")
+    parser.add_argument("--state", type=Path, default=ROOT / "states" / "bedroom.state")
+    parser.add_argument("--make-start-state", action="store_true", help="write the start savestate and stop")
+    parser.add_argument("--evaluate", type=Path, default=None, help="skip training: evaluate this brain")
+    parser.add_argument("--evaluate-naive", action="store_true", help="skip training: evaluate the untrained fly")
+    parser.add_argument("--eval-episodes", type=int, default=10)
+    parser.add_argument("--eval-seed", type=int, default=90_000)
+    return parser.parse_args(argv)
+
+
+def main() -> None:
+    args = parse_args()
+    cfg = replace(Config(), rom_path=args.rom, seed=args.seed, n_neurons=args.neurons, headless=True, uncapped=True)
+
+    if args.make_start_state:
+        make_start_state(cfg, args.state)
+        return
+
+    if args.evaluate is not None or args.evaluate_naive:
+        brain = None if args.evaluate_naive else args.evaluate
+        label = "naive" if brain is None else "trained"
+        results = evaluate(
+            cfg,
+            brain_path=brain,
+            episodes=args.eval_episodes,
+            episode_ticks=args.episode_ticks,
+            state_path=args.state,
+            base_seed=args.eval_seed,
+            label=label,
+        )
+        left = sum(r.left_house for r in results)
+        print(f"{label}: reached Pallet Town in {left} of {len(results)} episodes", flush=True)
+        return
+
+    results = train(
+        cfg,
+        total_ticks=args.ticks,
+        episode_ticks=args.episode_ticks,
+        out=args.out,
+        log_path=args.log,
+        state_path=args.state,
+        resume=args.resume,
+        eval_every=args.eval_every,
+    )
+    print("\nlearning curve (training episodes only)", flush=True)
+    for row in learning_curve(results):
+        print(
+            f"  {row['episodes']:>9s}  n={row['n']:<3d} mean reward {row['mean_reward']:8.1f}  "
+            f"mean tiles {row['mean_tiles']:6.1f}  left house {row['left_house']:.2f}",
+            flush=True,
+        )
+
+
+if __name__ == "__main__":
+    main()

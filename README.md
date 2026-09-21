@@ -4,16 +4,21 @@ A simulated fly brain plays Pokemon Red. A 2000-neuron leaky integrate-and-fire
 network watches the Game Boy screen through a fly-style optic lobe and presses
 buttons with seven "descending neuron" motor pools, through PyBoy.
 
-It is not a competent player. It is a motion-driven random walker with a
-visual bias: motion on the left of the screen pushes the left-turn pool, motion
-on the right pushes the right-turn pool, and so on. It has no memory of the
-game, no reward, no learning, and no idea what a Pokemon is. Watch it for the
-behaviour, not the progress.
+On top of that sits a **mushroom body**: the circuit a real fly learns with. A
+sparse Kenyon-cell code of the static screen feeds seven MBONs, one per motor
+pool, and a value readout. A dopamine signal built from a TD error over
+RAM-derived reward gates plasticity on those readouts and nothing else. The
+spiking connectome underneath never changes: it stays reflexes plus exploration
+noise, and the learned part is a place-dependent bias on top of it.
 
-That said, it does get somewhere. In a 60,000-step headless run from a cold
-boot it pressed through the intro and the name entry, walked around Red's
-bedroom, found the stairs, and went up and down them eleven times. It never got
-out of the house. See "What actually happened" below.
+The untrained fly is a motion-driven random walker. It walks around Red's
+bedroom, finds the stairs, and goes up and down them. In ten evaluation
+episodes it left the house **0 times**. After 2,000,000 ticks of training the
+same fly, same seeds, learning switched off, left the house **10 times out of
+10**, and four of those ten got inside a building in Pallet Town.
+
+That is the whole result. See "The experiment" for the raw numbers, and "What
+it cannot learn" for the ceiling, which is low.
 
 ## Setup
 
@@ -33,8 +38,13 @@ If the file is missing, `run.py` prints the exact path it wanted and exits 2.
 
 ```powershell
 & .\.venv\Scripts\python.exe run.py                                   # windowed, 60 Hz, HUD
+& .\.venv\Scripts\python.exe run.py --start-state                     # from the bedroom savestate
+& .\.venv\Scripts\python.exe run.py --naive --start-state             # the untrained fly, for comparison
 & .\.venv\Scripts\python.exe run.py --headless --uncapped --no-hud --max-steps 3000
 ```
+
+`run.py` loads `brains/latest.npz` when that file exists and prints one line
+saying which brain it loaded and how long it trained. `--naive` ignores it.
 
 | flag | what it does |
 |---|---|
@@ -47,11 +57,47 @@ If the file is missing, `run.py` prints the exact path it wanted and exits 2.
 | `--max-steps N` | stop after N ticks; 0 (default) runs until the window closes or Ctrl+C |
 | `--connectome CSV` | load an edge list (`pre,post,weight[,sign]`) instead of the synthetic net |
 | `--load-state PATH` | start from a PyBoy savestate, e.g. past the intro |
+| `--start-state` | shorthand for `--load-state states/bedroom.state` |
 | `--save-state PATH` | write a PyBoy savestate on exit |
+| `--brain PATH` | load this mushroom body instead of `brains/latest.npz` |
+| `--naive` | ignore any saved brain: the untrained fly |
+| `--learn` | keep learning while you watch |
+| `--save-brain` | with `--learn`, write the brain back on exit |
 
 Ctrl+C exits cleanly: buttons released, emulator closed, cursor restored.
 
 There is no install step. `run.py` puts `src/` on `sys.path` itself.
+
+## Train
+
+```powershell
+& .\.venv\Scripts\python.exe train.py                        # 2,000,000 ticks, 100 episodes
+& .\.venv\Scripts\python.exe train.py --ticks 5000000 --resume
+& .\.venv\Scripts\python.exe train.py --evaluate-naive       # the 10-episode baseline
+& .\.venv\Scripts\python.exe train.py --evaluate brains\latest.npz
+```
+
+Every episode starts from `states/bedroom.state`, a savestate in Red's bedroom
+with the player in control. `train.py` makes it the first time it is missing,
+by running the **untrained** fly from a cold boot until it is standing in the
+bedroom and has moved twice. Nothing about that is scripted; it took 5,039
+ticks here. `--make-start-state` does only that and stops.
+
+| flag | what it does |
+|---|---|
+| `--ticks N` | total tick budget (default 2,000,000) |
+| `--episode-ticks N` | ticks per episode (default 20,000) |
+| `--seed N` | episode seeds derive from this |
+| `--out PATH` | where the brain is written (default `brains/latest.npz`) |
+| `--resume` | continue from the brain at `--out` |
+| `--eval-every K` | run a learning-off evaluation episode every K episodes |
+| `--log PATH` | one CSV row per episode (default `runs/train.csv`) |
+| `--state PATH` | the start savestate |
+| `--make-start-state` | write the start savestate and stop |
+| `--evaluate PATH` / `--evaluate-naive` | skip training, run the evaluation block |
+
+The brain is checkpointed every ten episodes and on Ctrl+C, so an interrupt
+never loses a run. `brains/`, `states/` and `runs/` are gitignored.
 
 ## How the brain is wired
 
@@ -69,6 +115,10 @@ channel (brightening, L1-like) and an OFF channel (darkening, L2-like): 256 +
 The total is clipped at `max_current` (synaptic saturation), symmetrically so
 the noise stays zero-mean. The first frame produces a zero delta, not a
 whole-frame edge.
+
+The same downsample is exposed as `OpticLobe.retina`, and that is what the
+mushroom body reads. One `cv2.resize` per tick, one definition of what the fly
+sees: the spiking net gets the motion, the learned part gets the still picture.
 
 **Connectome** (`connectome.py`). A directed Watts-Strogatz small world: a ring
 lattice of `k=20` outgoing edges per neuron, each rewired with probability 0.1,
@@ -144,6 +194,13 @@ neurons that spiked last step, not a full matmul; spiking is a few percent, so
 this is much cheaper. `W` is held in Fortran order so those columns are
 contiguous.
 
+`step` takes an optional `pool_current`, seven numbers added to every neuron of
+the matching motor pool. That is the mushroom body's only way in, and it is a
+real input current to real neurons rather than a shortcut around them: the pool
+still has to reach threshold, and a learned bias still has to beat the reflex
+and the crossed inhibition from its opposite. A test asserts that a pool current
+moves exactly the 24 membrane voltages of its own pool and nothing else.
+
 **Motor** (`motor.py`). Each pool keeps two running averages of its own spike
 count: a fast leaky accumulator (tau of a few ticks) and a slow baseline (tau of
 about 300 ticks) holding the level its recent average drive would sustain. A
@@ -173,11 +230,109 @@ the startle shows on the HUD as a firing-rate jump. Both counters restart from
 zero afterwards. It fires during long dialogues and the intro, which is the
 intent: a startled fly mashing its way out of a text box.
 
+Each tick's presses are reported split two ways, `chosen` and `panicked`. The
+mushroom body writes eligibility only for `chosen`: crediting a panic burst
+would teach the fly whatever the random draw happened to be.
+
+**Mushroom body** (`mushroom_body.py`). The only part that learns.
+
+```
+static 16x16 luminance (256)
+  -> Kenyon cells: 2000 cells, 7 claws each, random signed weights, top 5% active
+  -> 7 MBONs (one per motor pool)  -> mbon_gain * tanh(mbon) as a current into that pool
+  -> 1 value readout               -> the TD error that gates plasticity
+```
+
+The retina is the same one the optic lobe already computed, read from
+`OpticLobe.retina`, so the frame is downsampled once. Its mean is subtracted
+first: the code is about the pattern on screen, not the backlight.
+
+Why this and not reward-modulated STDP over the whole recurrent net: credit
+assignment through recurrence with a delayed scalar reward does not converge in
+the number of ticks available here. The fly's own answer is a feedforward
+expansion into a sparse code, with plasticity confined to one synapse layer.
+Only `w_actor` (7 x 2000) and `w_critic` (2000) ever change. The connectome is
+untouched.
+
+Plasticity is three-factor: a KC was active, a pool was chosen, and dopamine
+says whether that was better than expected. The first two live in eligibility
+traces, the third arrives a few ticks later and multiplies what is left:
+
+```
+delta   = r + gamma * V(s') - V(s)
+e_actor = lambda_actor * e_actor;   on a press of pool a: e_actor[a, kc] += 1, the other six -= 1/6
+e_critic= lambda_critic * e_critic; e_critic[kc] += 1
+w_actor  += lr_actor  * delta * e_actor
+w_critic += lr_critic * delta * e_critic
+```
+
+The `-1/6` makes an update a preference shift between pools rather than a change
+in how loudly the whole body shouts: the seven rows of `e_actor` sum to zero, so
+a uniform dopamine level cannot inflate every pool at once. Panic-burst presses
+write no eligibility, because the fly did not choose them.
+
+The MBON output is squashed, so a learned preference can tilt a pool but never
+pin it: it still has to win against the reflex, the network noise and the
+crossed inhibition from its opposite. Signed is deliberate; real MBONs come in
+approach and avoidance types.
+
+**`lr_critic` is the most sensitive number in the project and it looks wrong.**
+It is 5e-5 against the actor's 2e-3. An update writes to all 100 active KCs at
+once, and a critic trace whose KC keeps being active saturates at
+`1/(1-lambda_critic)` = 50, so the step on the value readout is about 5000 times
+`lr_critic`. At the obvious 2e-3 the value estimate swings by tens per tick, the
+TD error is then noise rather than a teaching signal, and the actor random-walks
+into its weight clip: measured in the two-context test world, that gave LEFT the
+*most negative* weight in the context where LEFT was the only thing that paid.
+Dropping `lr_critic` alone took that test from a 0.58 share to 0.87.
+
+**Reward** (`reward.py`). RAM in, a scalar out, and the policy never sees any of
+it: in Pokemon the player is always screen-centred, so the frame is an egocentric
+view of the map and identifies place on its own.
+
+| part | weight | what it is |
+|---|---|---|
+| tile | +1 | a (map, x, y) not stood on this episode |
+| map | +5 | a map id not entered this episode |
+| event | +3 | each newly set bit in `wEventFlags` |
+| level | +5 | each party level gained |
+| badge | +50 | each badge |
+
+Nothing the fly can trigger without progressing pays anything. Opening the menu,
+advancing text and turning on the spot are free, and the staircase cannot be
+farmed: the second trip down pays nothing and neither do the tiles it already
+saw. That matters, because going up and down the stairs is exactly what the
+untrained fly does for sixteen minutes at a time.
+
+Every address was read out of the pret/pokered symbol file (`symbols` branch,
+`pokered.sym`) rather than remembered, and each one is in `config.py` with its
+pokered symbol name: `wPartyCount` 0xD163, `wPartyMon1Level` 0xD18C with a 0x2C
+stride, `wObtainedBadges` 0xD356, `wEventFlags` 0xD747 through 0xD886 inclusive
+(the next symbol is `wGrassRate` at 0xD887), `wIsInBattle` 0xD057, `wCurMap`
+0xD35E, `wYCoord` 0xD361, `wXCoord` 0xD362, `wPlayerName` 0xD158, `wJoyIgnore`
+0xCD6B.
+
+"Has control" is two concrete conditions: the player has a name (`wPlayerName[0]`
+is not 0x00, 0x50 or 0xFF), and `wJoyIgnore` is zero. The first is what keeps the
+uninitialised `wCurMap` of 0 at boot from being scored as a walk into Pallet
+Town; the second drops cutscenes and map transitions, where the engine is
+swallowing input and the fly is not the one doing anything.
+
+**Observers** (`loop.py`). `run_loop(config, observers=())` calls every observer
+with one immutable `TickState` per tick: step, frame, buttons held, the press
+that started, pool excursions, firing rate, dopamine, value, the seven MBONs,
+reward and its parts, episode reward, map id and name, x, y, in-battle, panic.
+The HUD is the first observer. This is the hook a 3D scene would attach to; there
+is nothing else in it yet, no sockets and no rendering.
+
 **HUD** (`hud.py`). In-place ANSI redraw every 6 ticks: step count, ticks/sec,
-smoothed firing rate with a bar, each pool's excursion above its own baseline as
-a share of its own threshold, the button currently held, the last 8 actions, the
-map name and id, X, Y, the in-battle flag and the panic count. `--no-hud` prints
-one line per second instead, which is what you want when piping to a file.
+smoothed firing rate with a bar, the dopamine signal on a signed bar, the value
+estimate, the episode reward and its parts, each pool's excursion above its own
+baseline as a share of its own threshold with that pool's MBON bias beside it,
+the button currently held, the last 8 actions, the map name and id, X, Y, the
+in-battle flag, the panic count, the per-button press counts, and a top line
+naming the brain that is driving. `--no-hud` prints one line per second instead,
+which is what you want when piping to a file.
 
 Map ids are named from a small table in `config.py` covering Pallet Town, the
 ten other towns and cities, Routes 1 and 2, Red's house and Oak's Lab. Anything
@@ -190,20 +345,132 @@ per number. Nothing else in the package hard-codes a magic number.
 
 ## Measured performance
 
-Brain step, best of three runs of 500 steps each, on this machine (Windows 11,
-Python 3.13, numpy 2.5.3):
+Best of three runs of 400 steps each, on this machine (Windows 11, Python 3.13,
+numpy 2.5.3), idle:
 
-| network size | ms per brain step | headroom at 60 Hz |
-|---|---|---|
-| n = 2000 | **0.23 ms** | 72x |
-| n = 5000 | **0.45 ms** | 37x |
+| piece | ms per tick |
+|---|---|
+| spiking brain, n = 2000 | **0.27 ms** (v1 measured 0.23) |
+| spiking brain, n = 5000 | **0.45 ms** (v1 measured 0.45) |
+| mushroom body: KC code, both readouts, weight update, both traces | **0.09 ms** |
 
-Whole loop including emulation, the frame read and the motor logic: about
-1,550 to 1,950 ticks/s headless and uncapped, so roughly 26x to 32x real time.
-Windowed it holds 60.1 ticks/s, which is the real-time cap, not a limit of the
-brain.
+The contract's budget for the learning layer is 0.3 ms per tick at
+`n_kc = 2000`. It costs 0.09 ms idle and 0.12 ms with another process competing
+for cores, and a test fails the build if it ever goes over 0.30. The whole thing
+is four dense operations on a (7, 2000) array per tick, so what is being
+measured is numpy call overhead, not arithmetic.
 
-## What actually happened
+Whole loop, headless and uncapped, including emulation, the frame read, the RAM
+snapshot, the mushroom body and the motor logic:
+
+| condition | ticks/s |
+|---|---|
+| idle machine, `run.py --headless --uncapped --start-state` | **1,558** |
+| evaluation episodes | 1,000 to 1,400 |
+| averaged over the whole 44-minute training run | **757** |
+
+The spread is contention: another project's server was running for most of the
+training. v1 measured 1,550 to 1,950 without the learning layer, so the
+mushroom body costs roughly what the table above says it costs and nothing more.
+The emulator tick is the bottleneck, and this round leaves it alone as the
+contract says to. 2,000,000 ticks of training is 44 minutes of wall clock and
+about nine hours of game time.
+
+## The experiment
+
+Ten evaluation episodes of 20,000 ticks each, from `states/bedroom.state`, with
+learning OFF, seeds 90000 to 90009. The same ten seeds for both flies. "Reached
+Pallet Town" means map 0 entered while the player had control, so the boot-time
+uninitialised `wCurMap` of 0 cannot count.
+
+### Baseline: the naive fly
+
+```
+& .\.venv\Scripts\python.exe train.py --evaluate-naive --eval-episodes 10 --episode-ticks 20000
+```
+
+| episode | reward | tiles | maps | furthest | left the house |
+|---|---|---|---|---|---|
+| 1 | 30 | 31 | 1 | Red's house 2F | no |
+| 2 | 34 | 35 | 1 | Red's house 2F | no |
+| 3 | 34 | 35 | 1 | Red's house 2F | no |
+| 4 | 33 | 34 | 1 | Red's house 2F | no |
+| 5 | 36 | 37 | 1 | Red's house 2F | no |
+| 6 | 31 | 32 | 1 | Red's house 2F | no |
+| 7 | 55 | 51 | 2 | Red's house 1F | no |
+| 8 | 58 | 54 | 2 | Red's house 1F | no |
+| 9 | 35 | 36 | 1 | Red's house 2F | no |
+| 10 | 48 | 44 | 2 | Red's house 1F | no |
+| **mean** | **39.4** | **38.9** | | | **0 of 10** |
+
+Three of the ten got as far as downstairs. None got out. That is the v1 result
+reproduced under the reward function: the bedroom holds about 42 reachable
+tiles and the naive fly covers most of them, then runs out of anything new.
+
+### Trained: 2,000,000 ticks, 100 episodes
+
+```
+& .\.venv\Scripts\python.exe train.py --evaluate brains\latest.npz --eval-episodes 10 --episode-ticks 20000
+```
+
+| episode | reward | tiles | maps | furthest | left the house |
+|---|---|---|---|---|---|
+| 1 | 125 | 116 | 3 | Pallet Town | yes |
+| 2 | 167 | 158 | 3 | Pallet Town | yes |
+| 3 | 219 | 165 | 4 | Oak's Lab | yes |
+| 4 | 166 | 140 | 4 | Oak's Lab | yes |
+| 5 | 143 | 134 | 3 | Pallet Town | yes |
+| 6 | 211 | 194 | 4 | Blue's house | yes |
+| 7 | 149 | 140 | 3 | Pallet Town | yes |
+| 8 | 239 | 213 | 4 | Oak's Lab | yes |
+| 9 | 171 | 162 | 3 | Pallet Town | yes |
+| 10 | 205 | 196 | 3 | Pallet Town | yes |
+| **mean** | **179.5** | **161.8** | | | **10 of 10** |
+
+**Primary acceptance: 10 of 10 against the baseline's 0 of 10.** The contract
+asked for 8. Reward is 4.6x the baseline and tiles covered 4.2x. Four of the ten
+found a building in Pallet Town: three reached Oak's Lab, one the rival's house.
+
+Stretch goals, reported and not dressed up: no episode reached Route 1 (map 12),
+no starter, no level gained, no badge. Over the whole 2,000,000 ticks of
+training, 9 of 100 episodes set at least one event flag, 7 entered the rival's
+house and 4 entered Oak's Lab. The fly gets outside reliably and then wanders
+Pallet Town; it has no idea the lab matters.
+
+### The learning curve
+
+Training episodes only, from `runs/train.csv`, twenty at a time:
+
+| episodes | mean reward | mean tiles | share leaving the house | mean distinct maps |
+|---|---|---|---|---|
+| 1-20 | 66.7 | 62.8 | 0.15 | 1.85 |
+| 21-40 | 93.5 | 88.2 | 0.45 | 2.25 |
+| 41-60 | 123.5 | 116.3 | 0.60 | 2.65 |
+| 61-80 | 130.2 | 121.7 | 0.50 | 2.70 |
+| 81-100 | 131.7 | 123.1 | 0.60 | 2.80 |
+
+The interleaved evaluation episodes (learning off, one every ten) went 0, 0, 1,
+1, 0, 0, 1, 0, 1, 1 on leaving the house across episodes 10 to 100, which is the
+same story with a sample size of one per point.
+
+Two things in that table are worth saying out loud. The curve is still rising at
+episode 100, so 2,000,000 ticks is where the budget ran out, not where learning
+stopped. And the training share never gets near the 10 of 10 the final
+evaluation got, because training episodes keep the exploration noise and the
+learning-on dopamine; the evaluation is the learned policy alone.
+
+The first episode that left the house was number 11. The first with learning
+switched off was number 30.
+
+What actually changed inside: mean absolute KC-to-MBON weight went from 0 to
+0.022 against a clip of 0.05, the mean absolute TD error per tick went from
+0.007 to about 0.06, and the press mix shifted from UP 23.5% / DOWN 25.7% /
+LEFT 18.9% / RIGHT 20.3% in episodes 1-10 to UP 19.3% / DOWN 23.2% / LEFT 22.6%
+/ RIGHT 22.4% in episodes 91-100. That is a small shift in the aggregate, which
+is what you would expect: the learned part is place-dependent, so it cancels out
+when you sum over a whole episode. The behaviour it produces does not.
+
+## What v1 did, for comparison
 
 `run.py --headless --uncapped --no-hud --max-steps 3000` from a cold boot:
 
@@ -248,16 +515,45 @@ finds the staircase again long before it finds a single door tile at the far
 end. Each visit to 1F averaged about 750 ticks, twelve seconds, which is not
 long enough to cross the room by chance.
 
-Nothing is going to fix that except a goal, and this fly does not have one.
+v1's README ended that paragraph with "nothing is going to fix that except a
+goal, and this fly does not have one". The mushroom body is that goal, and the
+table above is what it bought: 10 of 10 out of the front door.
 
 The panic reflex fired 11 times in the first 3,000 ticks and 28 times over
 60,000. That distribution is the point: it fires constantly during the intro and
 the long text boxes, where the player cannot move, and rarely once the fly is
-walking around a room.
+walking around a room. It survives training: 53 panics across training episodes
+1-10 and 70 across 91-100, which is the exploration noise the learned policy is
+still riding on.
+
+## What it cannot learn
+
+The trained fly is still a fly. The ceiling here is the early routes, and these
+are the reasons, not excuses:
+
+- **No planning.** There is no model of the game and no search. The mushroom
+  body is one linear readout of the current screen. It can learn "from a screen
+  that looks like this, DOWN has paid before". It cannot learn "go back for the
+  parcel first".
+- **It cannot read.** Nothing in the pipeline turns pixels into text. Every
+  dialogue box is a pattern to mash A at, and the difference between "you
+  received a POTION" and "your rival blocks the way" is invisible.
+- **No memory within an episode.** The policy input is one frame. Two places
+  that look alike get the same code and the same bias, and "I have already been
+  here this episode" is in the reward, not in anything the fly can see.
+- **Exploration is a random walk with a bias.** The reflex net and the panic
+  burst are the only things producing variation. Anything the fly has never once
+  stumbled into is something the critic can never value.
+- **Battles are not modelled at all.** A battle is a screen like any other. The
+  reward pays for levels, so winning one pays, but nothing in the circuit knows
+  what a type matchup is.
+- **The reward is an exploration bonus.** It pays for new ground, new events,
+  levels and badges. It does not pay for the plot, so anything the plot gates
+  (Oak's parcel, the rival fight, HM moves) is reachable only by accident.
 
 ## Honest expectations
 
-- It will not beat the game. It has no goal, no reward and no memory.
+- It will not beat the game.
 - It presses about one button every 14 ticks, and no single button runs at more
   than 40% of the rate its hold plus cooldown would allow. Raise
   `fire_threshold` in `config.py` for a calmer fly.
@@ -277,16 +573,29 @@ walking around a room.
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-53 tests, all headless, about 15 seconds. They pass with no ROM present except
-`tests/test_integration.py::test_600_headless_ticks_through_the_real_loop`,
-which skips when `roms/pokemon_red.gb` is absent.
+91 tests, all headless, about 80 seconds. They pass with no ROM present; the
+handful that need one skip when `roms/pokemon_red.gb` is absent, and the short
+training test also needs `states/bedroom.state`.
 
-`tests/test_behaviour.py` is the one that matters most: it runs the whole optic
-lobe to brain to motor chain with a fake button sink and holds it to two things
-that no unit test can see. No button may exceed 40% of the rate its hold plus
-cooldown allows, and a bright block wandering inside one third of the screen has
-to bias the matching pool by at least 1.5x over its opposite, in all four
-directions, summed over three seeds.
+Two of them carry most of the weight.
+
+`tests/test_learning.py::test_the_fly_learns_which_button_pays_in_which_context`
+is the one that says the learning rule is real. `tests/fake_world.py` shows one
+of two static frames for 300 ticks at a time; pressing LEFT under frame A pays
++1 on the next tick, pressing RIGHT under frame B pays +1, everything else pays
+nothing. The whole chain runs, optic lobe to mushroom body to spiking net to
+motor bridge, with nothing shortcut. After 8,000 ticks of training, with
+learning then switched off, the LEFT share of {LEFT, RIGHT} under A and the
+RIGHT share under B both have to be at least 0.70, summed over three seeds. The
+frames are built mirror-symmetric in both axes so the fixed retinotopic pathway
+has no reason to prefer either direction, and a second test holds the untrained
+control inside 0.35 to 0.65 to prove that.
+
+`tests/test_behaviour.py` holds the untrained circuit to two things no unit test
+can see. No button may exceed 40% of the rate its hold plus cooldown allows, and
+a bright block wandering inside one third of the screen has to bias the matching
+pool by at least 1.5x over its opposite, in all four directions, summed over
+three seeds.
 
 ## Choices the spec left open
 
@@ -314,6 +623,37 @@ directions, summed over three seeds.
   about being stuck. Only the idle counter can fire it there.
 - The map-name table covers only ids worth being sure about. Everything else
   prints as a number.
+
+And for the learning half:
+
+- The episode machinery lives in `src/flybrain/training.py`, with `train.py` at
+  the root as a thin CLI over it, mirroring how `run.py` sits over `loop.py`.
+  The spec put it all in `train.py`; splitting it is what lets the tests import
+  and drive an episode without a subprocess.
+- The tanh has a divisor, `mbon_scale`. The spec said "`mbon_gain * tanh(mbon)`
+  -style"; `mbon` is a sum over 100 active Kenyon cells, so with no divisor at
+  all the squash is hard over the moment any weight is learned and the bias is
+  effectively a sign bit.
+- `lr_critic` is forty times smaller than `lr_actor`. That is not a typo and the
+  reason is in the config comment and above: the update touches 100 KCs whose
+  traces saturate at 50, so the effective step is about 5000 times the number
+  written down.
+- `TickState` carries two fields beyond the list in the spec, `started` and
+  `panics`, so the HUD can keep the per-button press counts and the panic count
+  that the first spec required of it.
+- "Has control" is `wPlayerName[0]` being a real character and `wJoyIgnore`
+  being zero. The spec asked for a concrete definition and a test; this is it.
+  `wJoyIgnore` also drops the map-transition frames, which is deliberate: the
+  fly is not the one moving during those.
+- Reward is read from RAM every tick rather than sampled. The whole snapshot,
+  including a popcount over the 320-byte event-flag array, measures about 10
+  microseconds against a tick budget near 1000, so there was no reason to
+  sample.
+- All five reward parts are implemented. Every address was verified against the
+  pokered symbol file, so none had to be left out.
+- Episode seeds are `seed + 1000 * episode` for training and `seed + 7_000_000
+  + episode` for the interleaved evaluations, so the two sets never collide and
+  a training run is reproducible.
 
 ## Licence and dependencies
 

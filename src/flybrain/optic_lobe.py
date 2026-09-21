@@ -59,9 +59,18 @@ class OpticLobe:
         self.n_channels = 2 * self.size * self.size
         self.rng = np.random.default_rng(cfg.seed + 1)
         self._prev: np.ndarray | None = None
-        self.retina = np.zeros((self.size, self.size), dtype=np.float32)
+        self._retina = np.zeros((self.size, self.size), dtype=np.float32)
+
+    @property
+    def retina(self) -> np.ndarray:
+        """The downsampled luminance frame this step, (size, size) float32 in
+        [0,1]. The mushroom body reads it from here rather than downsampling
+        the frame a second time: one `cv2.resize` per tick, one definition of
+        what the fly sees."""
+        return self._retina
 
     def reset(self) -> None:
+        """Forget the previous frame, so the next one is a first frame again."""
         self._prev = None
 
     def step(self, frame: np.ndarray) -> np.ndarray:
@@ -74,7 +83,7 @@ class OpticLobe:
         else:
             delta = small - self._prev
         self._prev = small
-        self.retina = small
+        self._retina = small
 
         on = np.maximum(delta, 0.0).ravel()
         off = np.maximum(-delta, 0.0).ravel()

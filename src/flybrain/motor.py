@@ -29,6 +29,11 @@ burst of 6 to 10 random buttons is queued and played out one at a time, and a
 transient current pulse is offered to the loop to inject into the brain so the
 startle shows on the HUD. Both counters restart from zero afterwards.
 
+Each tick's presses are also reported split two ways, `chosen` and `panicked`,
+because the mushroom body may only write eligibility for presses the fly
+actually decided on. Crediting a panic burst would teach it whatever the random
+draw happened to be.
+
 The emulator is reached through a two-method protocol (`press`, `release`), so
 tests drive this with a fake that just records calls.
 """
@@ -62,6 +67,12 @@ class MotorBridge:
         self.fire_counts: dict[str, int] = dict.fromkeys(POOL_NAMES, 0)
         self.queue: list[str] = []  # pending panic burst
         self.panic_count = 0
+        # Presses that STARTED this tick, split by who decided them. The
+        # mushroom body writes eligibility for `chosen` only: a panic burst is
+        # a reflex, not a choice, and crediting it would teach the fly whatever
+        # the random draw happened to be.
+        self.chosen: list[str] = []
+        self.panicked: list[str] = []
         self.pulse = 0.0  # transient current for the loop, cleared when read
         self.position_stuck = 0  # ticks since (map_id, x, y) last changed
         self.idle_ticks = 0  # ticks since any button was last pressed
@@ -80,11 +91,12 @@ class MotorBridge:
 
     # -- button plumbing ---------------------------------------------------
 
-    def _start(self, pool: str) -> None:
+    def _start(self, pool: str, panic: bool = False) -> None:
         self.sink.press(BUTTON_FOR_POOL[pool])
         self.held[pool] = self.cfg.hold_frames
         self.fire_counts[pool] += 1
         self._pressed_this_tick = True
+        (self.panicked if panic else self.chosen).append(pool)
 
     def _release(self, pool: str) -> None:
         self.sink.release(BUTTON_FOR_POOL[pool])
@@ -137,7 +149,7 @@ class MotorBridge:
         self.release_all()
         pool = self.queue.pop(0)
         self.cooldown[pool] = 0
-        self._start(pool)
+        self._start(pool, panic=True)
         return "PANIC"
 
     def take_pulse(self) -> float:
@@ -151,6 +163,8 @@ class MotorBridge:
         """Advance one tick. Returns the action that started this tick, the
         string "PANIC" on a startle, or None."""
         self._pressed_this_tick = False
+        self.chosen = []
+        self.panicked = []
         self._tick_timers()
 
         if self.queue:  # playing out a burst; the brain does not get a vote
@@ -177,7 +191,7 @@ class MotorBridge:
         if self.held or self.cooldown[self.queue[0]] > 0:
             return None
         pool = self.queue.pop(0)
-        self._start(pool)
+        self._start(pool, panic=True)
         return pool
 
     def _fire_pools(self) -> str | None:

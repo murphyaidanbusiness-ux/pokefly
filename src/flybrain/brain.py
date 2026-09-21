@@ -38,6 +38,15 @@ class Brain:
         # onto the sensory neurons round-robin; the synthetic net is an exact
         # match and skips this entirely.
         self._fold = np.arange(cfg.n_sensory) % self.sensory_idx.size
+        self._pools = connectome.pool_matrix()
+
+    def reset(self) -> None:
+        """Back to rest. Between episodes: the connectome stays, the state goes."""
+        self.v.fill(self.cfg.v_rest)
+        self.refractory.fill(0)
+        self.spikes.fill(False)
+        self._rate = 0.0
+        self.steps = 0
 
     @property
     def firing_rate(self) -> float:
@@ -48,7 +57,15 @@ class Brain:
         """(7,) int: spikes this step in each motor pool, in POOL_NAMES order."""
         return self.spikes[self.conn.pool_matrix()].sum(axis=1)
 
-    def step(self, sensory_current: np.ndarray) -> np.ndarray:
+    def step(self, sensory_current: np.ndarray, pool_current: np.ndarray | None = None) -> np.ndarray:
+        """One step. `pool_current` is (7,) in POOL_NAMES order and is added to
+        every neuron of the matching motor pool, on top of the sensory current.
+
+        This is the mushroom body's only way in. It is a real input current to
+        real neurons, not a shortcut around them: the pool still has to reach
+        threshold, and the learned bias still has to beat the reflex and the
+        crossed inhibition from the opposing pool.
+        """
         cfg = self.cfg
         spiking = np.flatnonzero(self.spikes)
         self._input.fill(0.0)
@@ -61,6 +78,8 @@ class Brain:
             self._input[self.sensory_idx] = np.bincount(
                 fold, weights=sensory_current, minlength=self.sensory_idx.size
             ).astype(np.float32)
+        if pool_current is not None:
+            self._input[self._pools] += np.asarray(pool_current, dtype=np.float32)[:, None]
         if spiking.size:
             self._input += self.weights[:, spiking].sum(axis=1)
 
