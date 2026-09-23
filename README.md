@@ -109,7 +109,13 @@ There is no install step. `run.py` puts `src/` on `sys.path` itself.
 
 A browser tab opens on `http://127.0.0.1:8765/` with a small 3D living room:
 the fly sits on a couch holding a controller and the CRT in front of it shows
-the live game. The emulator runs headless at 60 Hz (add `--window` to keep the
+the live game. The room is a late-1990s one: wood panelling and wallpaper, a
+VCR blinking 12:00 under the TV, VHS tapes, a beige console the controller
+cable tangles its way back to, a lava lamp, a boombox, a fish tank with three
+goldfish, string lights, a pizza box on the coffee table, and a fly swatter
+on the wall under an "in case of emergency" sign. Every texture is drawn in
+code (`scene/js/textures.js`, `scene/js/props.js`); there are still no image
+files and nothing is fetched from the network. The emulator runs headless at 60 Hz (add `--window` to keep the
 SDL2 window too); the terminal HUD stays. Every other flag works with it
 (`--brain`, `--naive`, `--learn`, `--uncapped`). `--couch-port N` moves the
 server, `--no-browser` skips opening the tab. Ctrl+C stops the run and frees

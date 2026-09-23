@@ -13,6 +13,31 @@
   #stage { position: fixed; inset: 0; }
   #stage canvas { display: block; }
 
+  /* Film grain and a vignette over the canvas, under every panel. The noise
+     tile comes from main.js; the animation only moves a composited layer. */
+  #grain { position: fixed; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
+  #grain::before {
+    content: ''; position: absolute; inset: -100%;
+    background-image: var(--grain); background-size: 160px 160px;
+    opacity: 0.11; mix-blend-mode: overlay;
+    animation: grain 0.8s steps(8) infinite;
+  }
+  #grain::after {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(ellipse 75% 70% at 50% 48%, rgba(0,0,0,0) 58%, rgba(6,3,10,0.42) 100%);
+  }
+  @keyframes grain {
+    0% { transform: translate(0, 0); }
+    12% { transform: translate(-7%, 4%); }
+    25% { transform: translate(5%, -9%); }
+    37% { transform: translate(-11%, -3%); }
+    50% { transform: translate(8%, 7%); }
+    62% { transform: translate(-3%, 11%); }
+    75% { transform: translate(12%, -5%); }
+    87% { transform: translate(-9%, -10%); }
+    100% { transform: translate(0, 0); }
+  }
+
   #overlay {
     position: fixed; top: 14px; left: 14px; z-index: 5;
     max-width: 330px; padding: 12px 14px;
@@ -140,6 +165,7 @@
 <body>
 
 <div id="stage"></div>
+<div id="grain"></div>
 
 <div id="overlay">
   <h1>a fly on a couch</h1>

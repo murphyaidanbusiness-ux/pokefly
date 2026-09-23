@@ -49,7 +49,7 @@ empty and the scene is still wrong, the browser console has the rest.
    or the TV is out of shot, the numbers to move are `VIEWS` in
    `scene/js/theme.js`.
 2. **Light levels.** three.js light intensities are physical units and the
-   values here (lamp 11, TV spot 5 to 35) were chosen by reasoning about
+   values here (lamp 9, TV spot 5 to 35) were chosen by reasoning about
    inverse-square falloff, not by looking. If the room is too dark or blown out,
    `Television._buildLights` and `buildLamp` are the two places.
 3. **Whether a press reads at a glance.** The contract says it must. If it does
@@ -68,8 +68,9 @@ empty and the scene is still wrong, the browser console has the rest.
 ## What is not in the scene
 
 - No downloaded models or textures. Every shape is a three.js primitive, a
-  lathe, or a hand-drawn `Shape`; the floor, the rug, the picture on the wall
-  and the controller labels are canvases drawn in code.
+  lathe, a tube, or a hand-drawn `Shape`; every texture is a canvas drawn in
+  code (`scene/js/textures.js`, plus the controller labels in `fly.js`), and
+  everything printed in the room shares one 512 px atlas.
 - Only three.js is vendored (`scene/vendor/`, r186, MIT, with its LICENCE). The
   orbit control is ours, in `scene/js/orbit.js`, because it is eighty lines and
   vendoring the example version would have needed an import map.
@@ -149,3 +150,78 @@ as recorded`; if it says DIVERGED, that is a bug worth a report.
    comfortably readable on a phone, but at a small window they get tiny.
 4. Two renders a frame in the portrait composition: if the frame rate drops
    under 48 the scene turns shadows off, which changes the look.
+
+## Round three: the 1990s living room
+
+This round was looked at, in headless Chromium with software WebGL
+(SwiftShader), at 1280x720, 1920x1080 and 1080x1920 portrait, in all four
+views. It has not been looked at on a real GPU or a real phone.
+
+The room is now dressed as a late-1990s living room. Everything is invented:
+no real brands, logos or characters. The new props are in
+`scene/js/props.js`, their textures in `scene/js/textures.js`, the palette in
+`RETRO` in `theme.js`.
+
+### The room pass
+
+| look at | where | what it should be |
+|---|---|---|
+| the walls | any view | dusty mauve wallpaper with cream pin stripes and small sprigs, dark wood panelling below a chair rail, trim at the floor and ceiling |
+| the ceiling | orbit up | popcorn plaster |
+| the rug | view `1` | a southwestern pattern in rust, teal, mustard and cream that reads as pile, not print |
+| the couch | view `3`, portrait | a dusty teal plaid. The fly must still stand out against it |
+| the throw and pillow | portrait, left edge | a striped knitted throw over the right back cushion and a mauve pillow in the corner. Muted, never louder than the fly |
+| the TV cabinet | view `1` | wood veneer, a VCR in the left bay with a green 12:00 blinking, a stack of labelled tapes in the right bay, a tape with a BE KIND REWIND sticker on the VCR |
+| the TV | view `1`, `4` | charcoal, a speaker grille down the left of the bezel, knobs and a red "03" channel readout on the right, vents on the side, rabbit ears on top |
+| the picture | key `2`, portrait top | scanlines inside each Game Boy row (not every other row), a gentle darkening into the corners, a faint sheen top left. In the wide shot the lines fade out rather than shimmer. The halo round the tube glows outward and leaves the picture clear |
+| the console | floor in front of the TV | a beige box with a cartridge in the slot, another on the floor, a red power light |
+| the controller cable | portrait, view `1` | from the pad down to the rug, a tangle, under the coffee table, into the console. The part from the pad to the rug moves with the fly and lifts when it hops |
+| the coffee table | view `1`, `4` | two pizza boxes with one slice left, two cans and a crushed one, a bowl of cheese puffs, a remote, a rented tape and magazines on the shelf. Low enough that nothing pokes into the portrait TV band |
+| the bookcase | view `1`, `4` | game boxes, tapes on end with handwritten labels, books, a snow globe, and a fish tank on top with three goldfish swimming |
+| the window | view `1`, left wall | a night sky with a moon, stars, rooftops and a streetlight, behind beige blinds tilted open, a cactus on the sill, faint blue stripes of moonlight on the floor under it |
+| the string lights | view `1`, `3` | coloured bulbs in swags along three walls, breathing slowly, each with a soft glow on the wall behind it |
+| the wall art | view `1`, `4` | a BUZZ FEST '97 flyer, a GO FLIES! pennant, a wall clock showing the real local time, a September 1998 calendar with the 28th circled, a HANG IN THERE poster on the right wall |
+| the fly swatter | view `3`, behind the fly | a red swatter hung on a nail over an IN CASE OF EMERGENCY sign. The fly faces the other way |
+| the left arm of the couch | view `3`, portrait right edge | a fly-sized mustard mug and two sugar cubes |
+| the end table | view `3` | a lava lamp with wax blobs rising and sinking and a pink glow, and a see-through teal phone with a coiled cord |
+| the corners | view `4` | a boombox with cassettes on the floor, a purple vinyl beanbag, a snake plant in each back corner |
+| grain and vignette | any view | a faint moving film grain and darker corners over the whole frame, under the panels |
+
+### Things that must not have changed
+
+Every line of the five-minute pass and the portrait pass above still holds.
+In particular: the TV is still the key light (the new lights are small: the
+lava lamp's glow, and the unlit bulbs and fish tank), a press still lights and
+pokes its control, the head glow and its gold and blue are untouched, and
+views `1` to `4`, `R`, `G`, `H`, `P`, `S` and the portrait composition work as
+before. View `1` looks a little further left than it did, so the fly sits
+more clear of the corner panel.
+
+### Cost
+
+Measured with `renderer.info` and a draw-call counter in the page:
+
+| | before | after |
+|---|---|---|
+| draw calls, view `1` landscape (shadow pass included) | 198 | 129 |
+| draw calls, portrait composition (two cameras) | 235 | 109 |
+| triangles, view `1` | 25k | 82k |
+
+The count went down while the room filled up because static shapes are now
+merged by material (`scene/js/batch.js`): the couch is one mesh, every prop
+in the room is about seven, each fly leg is one instead of six, and the
+portrait fly band reuses the shadow map the TV band drew. The moving props
+are instanced (lava blobs, goldfish, bulbs and their glow) and `update`
+allocates nothing. There is still one shadow-casting light, the TV.
+
+### Likeliest to be wrong
+
+1. Colour and brightness on a real GPU and a phone screen. SwiftShader's
+   output was checked by eye, but the grain (`#grain` in `index.html`,
+   opacity 0.11) and the wall brightness (`ROOM.wall`) are the dials if it
+   looks muddy or too busy.
+2. The throw on the couch (`couchDressing` in `props.js`): it sits right at
+   the left edge of the portrait fly band. If it pulls the eye from the fly,
+   darken it or take it out.
+3. The clock uses the browser's time zone, so a recording shows the time it
+   was recorded.

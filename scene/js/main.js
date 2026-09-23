@@ -44,7 +44,7 @@ function boot() {
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.15;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   stage.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -78,7 +78,7 @@ function boot() {
     tvCamera.updateProjectionMatrix();
   }
 
-  buildRoom(THREE, scene);
+  const room = buildRoom(THREE, scene);
   const television = new Television(THREE, scene);
   const fly = new FlyActor(THREE, scene, SEAT_HEIGHT);
   const monitor = new Monitor(THREE, scene);
@@ -204,11 +204,13 @@ function boot() {
     }
   }
 
-  const clock = new THREE.Clock();
+  const timer = new THREE.Timer();
+  timer.connect(document);
   let elapsed = 0;
 
-  function frame() {
-    const dt = clamp(clock.getDelta(), 0, 0.1);
+  function frame(now) {
+    timer.update(now);
+    const dt = clamp(timer.getDelta(), 0, 0.1);
     elapsed += dt;
 
     if (feed.status !== 'connected' && elapsed - lastStaticAt > 0.07) {
@@ -218,6 +220,7 @@ function boot() {
 
     fly.update(dt, signals);
     television.update(dt);
+    room.update(dt, elapsed);
     monitor.update(elapsed);
     orbit.update(dt);
     journey.update(dt);
@@ -254,6 +257,9 @@ function boot() {
     renderer.setViewport(0, height - tvHeight, width, tvHeight);
     renderer.setScissor(0, height - tvHeight, width, tvHeight);
     renderer.render(scene, tvCamera);
+    // The fly band reuses the shadow map the TV band just drew: nothing has
+    // moved between the two renders, and it saves a whole shadow pass.
+    renderer.shadowMap.autoUpdate = false;
 
     flyCamera.aspect = width / flyHeight;
     flyCamera.updateProjectionMatrix();
@@ -267,6 +273,7 @@ function boot() {
     renderer.setViewport(0, stripHeight, width, flyHeight);
     renderer.setScissor(0, stripHeight, width, flyHeight);
     renderer.render(scene, flyCamera);
+    renderer.shadowMap.autoUpdate = true;
 
     if (stripHeight > 0) {
       renderer.setViewport(0, 0, width, stripHeight);
@@ -276,8 +283,31 @@ function boot() {
     renderer.setScissorTest(false);
   }
 
+  filmGrain();
   requestAnimationFrame(frame);
   window.__couchBooted = true;
+}
+
+/** A faint moving grain and a vignette over the canvas, in CSS: the noise
+ *  tile is drawn once here and slid about by a compositor animation
+ *  (index.html), so it costs the GPU next to nothing and no JS per frame. */
+function filmGrain() {
+  const grain = document.getElementById('grain');
+  if (!grain) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = 160;
+  canvas.height = 160;
+  const ctx = canvas.getContext('2d');
+  const image = ctx.createImageData(160, 160);
+  for (let i = 0; i < image.data.length; i += 4) {
+    const value = Math.random() * 255;
+    image.data[i] = value;
+    image.data[i + 1] = value;
+    image.data[i + 2] = value;
+    image.data[i + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  grain.style.setProperty('--grain', `url(${canvas.toDataURL('image/png')})`);
 }
 
 try {

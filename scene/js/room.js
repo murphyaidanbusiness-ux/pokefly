@@ -1,188 +1,143 @@
 /**
- * The living room: floor, rug, walls, couch, side table, lamp, base lighting.
+ * The living room: floor, walls, ceiling, couch, lamp, base lighting, and the
+ * 1990s clutter from props.js.
  *
- * Everything is a three.js primitive. The only textures are drawn into a
- * canvas here in code (floor planks, the rug, a soft wall gradient); nothing
- * is downloaded. The room is deliberately dim, because the TV is the key light
- * and it cannot look like one if the room is already bright.
+ * Everything is a three.js primitive; the only textures are canvases drawn in
+ * code (textures.js). Static shapes are merged by material into a handful of
+ * meshes (batch.js), so a room full of tapes and cans costs a few draw calls.
+ * The room is deliberately dim, because the TV is the key light and it cannot
+ * look like one if the room is already bright.
+ *
+ * Layout, in metres: the TV stands against the back wall (z = -2.45), the
+ * couch faces it with its back toward the rear wall (z = 2.6), the side walls
+ * are at x = +-3.4 and the ceiling at y = 3.0.
  *
  * The couch seat top is at y = 0.54 and that is where the fly sits, so if you
  * move the couch, move the fly.
  */
 
-import { ROOM } from './theme.js';
+import { Batch } from './batch.js';
+import { buildProps } from './props.js';
+import {
+  buildAtlas,
+  ceilingTexture,
+  floorTexture,
+  panellingTexture,
+  plaidTexture,
+  rugTexture,
+  wallpaperTexture,
+  woodTexture,
+} from './textures.js';
+import { RETRO, ROOM, hex } from './theme.js';
 
 export const SEAT_HEIGHT = 0.54;
 
-function canvas2d(width, height) {
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  return canvas;
+const BACK_Z = -2.45;
+const REAR_Z = 2.6;
+const SIDE_X = 3.4;
+const CEILING = 3.0;
+const PANEL_TOP = 0.95;
+
+/** The four walls: wallpaper above a chair rail, panelling below it, trim at
+ *  the floor and the rail. Two draw calls for the surfaces, trim goes in the
+ *  wood batch. */
+function buildWalls(THREE, group, wood) {
+  const paper = new Batch(THREE);
+  const panel = new Batch(THREE);
+  const width = SIDE_X * 2;
+  const depth = REAR_Z - BACK_Z;
+  const midZ = (REAR_Z + BACK_Z) / 2;
+  const upper = CEILING - PANEL_TOP;
+  const walls = [
+    // [length, x, z, turn so the face points into the room]
+    [width, 0, BACK_Z, 0],
+    [width, 0, REAR_Z, Math.PI],
+    [depth, -SIDE_X, midZ, Math.PI / 2],
+    [depth, SIDE_X, midZ, -Math.PI / 2],
+  ];
+  for (const [length, x, z, turn] of walls) {
+    paper.at(x, 0, z, turn);
+    paper.plane(length, upper, { y: PANEL_TOP + upper / 2, uvScale: [length / 0.6, upper / 0.6] });
+    panel.at(x, 0, z, turn);
+    panel.plane(length, PANEL_TOP, { y: PANEL_TOP / 2, uvScale: [length / 1.2, 1] });
+    wood.at(x, 0, z, turn);
+    const walnut = hex(RETRO.walnut);
+    wood.box(length, 0.11, 0.025, { y: 0.055, z: 0.012, color: walnut });
+    wood.box(length, 0.045, 0.035, { y: PANEL_TOP, z: 0.017, color: hex(RETRO.walnutLight) });
+    wood.box(length, 0.07, 0.03, { y: CEILING - 0.035, z: 0.015, color: hex(RETRO.cream) });
+  }
+  wood.at();
+
+  const paperMaterial = new THREE.MeshStandardMaterial({
+    map: wallpaperTexture(THREE),
+    color: ROOM.wall,
+    roughness: 0.95,
+  });
+  const panelMaterial = new THREE.MeshStandardMaterial({
+    map: panellingTexture(THREE),
+    roughness: 0.6,
+    metalness: 0.0,
+  });
+  group.add(paper.mesh(paperMaterial, { cast: false }));
+  group.add(panel.mesh(panelMaterial, { cast: false }));
+
+  const ceiling = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, depth),
+    new THREE.MeshStandardMaterial({ map: ceilingTexture(THREE), roughness: 1.0 }),
+  );
+  ceiling.material.map.repeat.set(width / 1.2, depth / 1.2);
+  ceiling.rotation.x = Math.PI / 2;
+  ceiling.position.set(0, CEILING, midZ);
+  group.add(ceiling);
 }
 
-function canvasTexture(THREE, canvas, repeatX = 1, repeatY = 1) {
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(repeatX, repeatY);
-  texture.anisotropy = 4;
-  return texture;
-}
+/** The couch, all one mesh in the plaid, with its feet in the wood batch.
+ *  Seat cushion tops sit at SEAT_HEIGHT. */
+function buildCouch(THREE, fabric, wood) {
+  const dark = ROOM.couchDark;
+  const round = (width, height, depth, o) => fabric.sphere(1, { ...o, sx: width / 2, sy: height / 2, sz: depth / 2 }, 22, 16);
 
-function floorTexture(THREE) {
-  const canvas = canvas2d(512, 512);
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#4a3323';
-  ctx.fillRect(0, 0, 512, 512);
-  for (let y = 0; y < 512; y += 64) {
-    const shade = 28 + Math.floor(Math.random() * 22);
-    ctx.fillStyle = `rgb(${58 + shade}, ${38 + Math.floor(shade * 0.6)}, ${24 + Math.floor(shade * 0.4)})`;
-    ctx.fillRect(0, y, 512, 62);
-    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(0, y + 63);
-    ctx.lineTo(512, y + 63);
-    ctx.stroke();
-    // A few grain streaks so the planks are not flat colour.
-    for (let i = 0; i < 26; i += 1) {
-      ctx.strokeStyle = `rgba(0,0,0,${0.03 + Math.random() * 0.06})`;
-      ctx.lineWidth = 1;
-      const gy = y + 4 + Math.random() * 54;
-      ctx.beginPath();
-      ctx.moveTo(Math.random() * 512, gy);
-      ctx.lineTo(Math.random() * 512, gy + (Math.random() - 0.5) * 3);
-      ctx.stroke();
+  fabric.box(2.05, 0.34, 0.95, { x: 0, y: 0.28, z: 1.55, color: dark });
+  for (const side of [-1, 1]) {
+    fabric.box(0.22, 0.42, 0.95, { x: side * 0.915, y: 0.62, z: 1.55 });
+    round(0.22, 0.2, 0.95, { x: side * 0.915, y: 0.82, z: 1.55 });
+    for (const z of [1.2, 1.9]) {
+      wood.cyl(0.04, 0.03, 0.11, 10, { x: side * 0.85, y: 0.055, z, color: hex(RETRO.walnut) });
     }
   }
-  return canvasTexture(THREE, canvas, 3, 3);
-}
-
-function rugTexture(THREE) {
-  const canvas = canvas2d(512, 384);
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#7d3439';
-  ctx.fillRect(0, 0, 512, 384);
-  ctx.fillStyle = '#93414a';
-  for (let i = 0; i < 512; i += 26) {
-    ctx.globalAlpha = 0.25;
-    ctx.fillRect(i, 0, 13, 384);
-  }
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = '#d8b46a';
-  ctx.lineWidth = 10;
-  ctx.strokeRect(20, 20, 472, 344);
-  ctx.lineWidth = 3;
-  ctx.strokeRect(40, 40, 432, 304);
-  ctx.fillStyle = 'rgba(216,180,106,0.35)';
-  ctx.beginPath();
-  ctx.ellipse(256, 192, 110, 78, 0, 0, Math.PI * 2);
-  ctx.fill();
-  return canvasTexture(THREE, canvas);
-}
-
-function wallTexture(THREE) {
-  const canvas = canvas2d(16, 256);
-  const ctx = canvas.getContext('2d');
-  const gradient = ctx.createLinearGradient(0, 0, 0, 256);
-  gradient.addColorStop(0, '#221d29');
-  gradient.addColorStop(0.55, '#332b3c');
-  gradient.addColorStop(1, '#3b3244');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, 16, 256);
-  return canvasTexture(THREE, canvas);
-}
-
-function cushion(THREE, material, width, height, depth) {
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 22, 16), material);
-  mesh.scale.set(width / 2, height / 2, depth / 2);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function box(THREE, material, width, height, depth) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  return mesh;
-}
-
-function buildCouch(THREE) {
-  const group = new THREE.Group();
-  const fabric = new THREE.MeshStandardMaterial({ color: ROOM.couch, roughness: 0.95, metalness: 0.0 });
-  const dark = new THREE.MeshStandardMaterial({ color: ROOM.couchDark, roughness: 0.95 });
-  const feet = new THREE.MeshStandardMaterial({ color: ROOM.wood, roughness: 0.6 });
-
-  const base = box(THREE, dark, 2.05, 0.34, 0.95);
-  base.position.set(0, 0.28, 1.55);
-  group.add(base);
-
   for (const side of [-1, 1]) {
-    const arm = box(THREE, fabric, 0.22, 0.42, 0.95);
-    arm.position.set(side * 0.915, 0.62, 1.55);
-    group.add(arm);
-    const top = cushion(THREE, fabric, 0.22, 0.2, 0.95);
-    top.position.set(side * 0.915, 0.82, 1.55);
-    group.add(top);
-    const foot = box(THREE, feet, 0.1, 0.11, 0.1);
-    foot.position.set(side * 0.85, 0.055, 1.2);
-    group.add(foot);
-    const foot2 = foot.clone();
-    foot2.position.z = 1.9;
-    group.add(foot2);
+    round(0.95, 0.24, 0.86, { x: side * 0.49, y: SEAT_HEIGHT - 0.12, z: 1.53 });
   }
-
-  // Seat: two pillowy cushions. Their top sits at SEAT_HEIGHT.
+  fabric.box(2.05, 0.62, 0.16, { x: 0, y: 0.73, z: 1.96, color: dark });
   for (const side of [-1, 1]) {
-    const seat = cushion(THREE, fabric, 0.95, 0.24, 0.86);
-    seat.position.set(side * 0.49, SEAT_HEIGHT - 0.12, 1.53);
-    group.add(seat);
+    round(0.95, 0.62, 0.3, { x: side * 0.49, y: 0.78, z: 1.84, rx: -0.12 });
   }
-
-  const backRail = box(THREE, dark, 2.05, 0.62, 0.16);
-  backRail.position.set(0, 0.73, 1.96);
-  group.add(backRail);
-  for (const side of [-1, 1]) {
-    const back = cushion(THREE, fabric, 0.95, 0.62, 0.3);
-    back.position.set(side * 0.49, 0.78, 1.84);
-    back.rotation.x = -0.12;
-    group.add(back);
-  }
-  return group;
+  // Piping along the front of the base: a thin darker roll.
+  fabric.cyl(0.018, 0.018, 1.62, 8, { x: 0, y: 0.44, z: 1.075, rz: Math.PI / 2, color: dark });
 }
 
-function buildTable(THREE, x, z) {
-  const group = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: ROOM.wood, roughness: 0.55 });
-  const top = box(THREE, wood, 0.6, 0.05, 0.5);
-  top.position.set(0, 0.52, 0);
-  group.add(top);
+function buildTable(wood, x, z) {
+  const oak = hex(RETRO.oak);
+  wood.at(x, 0, z);
+  wood.box(0.6, 0.05, 0.5, { y: 0.52, color: oak });
+  wood.box(0.52, 0.025, 0.42, { y: 0.16, color: hex(RETRO.veneer) });
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
-      const leg = box(THREE, wood, 0.045, 0.5, 0.045);
-      leg.position.set(sx * 0.25, 0.25, sz * 0.2);
-      group.add(leg);
+      wood.box(0.045, 0.5, 0.045, { x: sx * 0.25, y: 0.25, z: sz * 0.2, color: oak });
     }
   }
-  group.position.set(x, 0, z);
-  return group;
+  wood.at();
 }
 
-function buildLamp(THREE) {
-  const group = new THREE.Group();
-  const metal = new THREE.MeshStandardMaterial({ color: ROOM.metal, roughness: 0.35, metalness: 0.8 });
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.2, 0.04, 20), metal);
-  base.position.y = 0.02;
-  base.receiveShadow = true;
-  group.add(base);
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1.2, 12), metal);
-  pole.position.y = 0.62;
-  pole.castShadow = true;
-  group.add(pole);
+function buildLamp(THREE, metal, x, z) {
+  metal.at(x, 0, z);
+  const brass = hex(RETRO.brass);
+  metal.cyl(0.17, 0.2, 0.04, 20, { y: 0.02, color: brass });
+  metal.cyl(0.018, 0.018, 1.2, 12, { y: 0.62, color: brass });
+  metal.sphere(0.03, { y: 1.18, color: brass });
+  metal.at();
 
+  const group = new THREE.Group();
   const shadeMaterial = new THREE.MeshStandardMaterial({
     color: 0xffe0b2,
     emissive: 0xffb066,
@@ -190,120 +145,95 @@ function buildLamp(THREE) {
     roughness: 0.9,
     side: THREE.DoubleSide,
   });
-  const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.24, 0.26, 24, 1, true), shadeMaterial);
+  const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.26, 0.28, 24, 1, true), shadeMaterial);
   shade.position.y = 1.3;
   group.add(shade);
 
-  const bulb = new THREE.PointLight(0xffb066, 11, 7, 2);
+  const bulb = new THREE.PointLight(0xffb066, 9, 7, 2);
   bulb.position.set(0, 1.26, 0);
   group.add(bulb);
   group.userData.bulb = bulb;
-  return group;
-}
-
-function buildPicture(THREE) {
-  const canvas = canvas2d(192, 144);
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#2b3a4a';
-  ctx.fillRect(0, 0, 192, 144);
-  ctx.fillStyle = '#4c6b52';
-  ctx.beginPath();
-  ctx.moveTo(0, 110);
-  ctx.lineTo(60, 60);
-  ctx.lineTo(110, 105);
-  ctx.lineTo(150, 72);
-  ctx.lineTo(192, 112);
-  ctx.lineTo(192, 144);
-  ctx.lineTo(0, 144);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = '#f2d98a';
-  ctx.beginPath();
-  ctx.arc(148, 40, 15, 0, Math.PI * 2);
-  ctx.fill();
-  const group = new THREE.Group();
-  const frame = new THREE.Mesh(
-    new THREE.BoxGeometry(0.66, 0.52, 0.04),
-    new THREE.MeshStandardMaterial({ color: 0x6b4a2c, roughness: 0.6 }),
-  );
-  group.add(frame);
-  const art = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.58, 0.44),
-    new THREE.MeshStandardMaterial({ map: canvasTexture(THREE, canvas), roughness: 0.95 }),
-  );
-  art.position.z = 0.021;
-  group.add(art);
+  group.position.set(x, 0, z);
   return group;
 }
 
 /**
  * Builds the room into `scene` and returns the handles the rest of the scene
- * needs: the lamp (so it can flicker with the TV), and the list of materials
- * that shadows are switched on and off with.
+ * needs: the lamp, the base lights, and `update(dt, elapsed)` for the few
+ * props that move (lava lamp, string lights, the clock, the VCR's 12:00).
  */
 export function buildRoom(THREE, scene) {
   const group = new THREE.Group();
+  const atlas = buildAtlas(THREE);
+
+  // One batch per material. Props add to these; each becomes one mesh.
+  const kit = {
+    atlas,
+    wood: new Batch(THREE),
+    fabric: new Batch(THREE),
+    matte: new Batch(THREE),
+    gloss: new Batch(THREE),
+    metal: new Batch(THREE),
+    art: new Batch(THREE),
+    glow: new Batch(THREE),
+  };
 
   const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(9, 9),
-    new THREE.MeshStandardMaterial({ map: floorTexture(THREE), color: ROOM.floor, roughness: 0.85 }),
+    new THREE.PlaneGeometry(SIDE_X * 2, REAR_Z - BACK_Z),
+    new THREE.MeshStandardMaterial({ map: floorTexture(THREE), color: ROOM.floor, roughness: 0.55 }),
   );
+  floor.material.map.repeat.set(2.2, 1.7);
   floor.rotation.x = -Math.PI / 2;
+  floor.position.z = (REAR_Z + BACK_Z) / 2;
   floor.receiveShadow = true;
   group.add(floor);
 
+  const rugMap = rugTexture(THREE);
   const rug = new THREE.Mesh(
     new THREE.PlaneGeometry(3.5, 2.6),
-    new THREE.MeshStandardMaterial({ map: rugTexture(THREE), color: ROOM.rug, roughness: 1.0 }),
+    new THREE.MeshStandardMaterial({ map: rugMap, bumpMap: rugMap, bumpScale: 2.5, color: ROOM.rug, roughness: 1.0 }),
   );
   rug.rotation.x = -Math.PI / 2;
   rug.position.set(0, 0.006, 0.35);
   rug.receiveShadow = true;
   group.add(rug);
 
-  const wallMaterial = new THREE.MeshStandardMaterial({
-    map: wallTexture(THREE),
-    color: ROOM.wall,
-    roughness: 0.95,
-  });
-  const back = new THREE.Mesh(new THREE.PlaneGeometry(9, 3.4), wallMaterial);
-  back.position.set(0, 1.7, -2.45);
-  back.receiveShadow = true;
-  group.add(back);
-  for (const side of [-1, 1]) {
-    const wall = new THREE.Mesh(new THREE.PlaneGeometry(6, 3.4), wallMaterial);
-    wall.position.set(side * 3.4, 1.7, 0.5);
-    wall.rotation.y = -side * (Math.PI / 2);
-    wall.receiveShadow = true;
-    group.add(wall);
-  }
-
-  const skirting = new THREE.Mesh(
-    new THREE.BoxGeometry(6.8, 0.12, 0.04),
-    new THREE.MeshStandardMaterial({ color: 0x1d1a22, roughness: 0.8 }),
-  );
-  skirting.position.set(0, 0.06, -2.42);
-  group.add(skirting);
-
-  const picture = buildPicture(THREE);
-  picture.position.set(-1.85, 1.75, -2.41);
-  group.add(picture);
-
-  group.add(buildCouch(THREE));
-  group.add(buildTable(THREE, 1.55, 0.75));
-
-  const lamp = buildLamp(THREE);
-  lamp.position.set(-2.0, 0, 0.5);
+  buildWalls(THREE, group, kit.wood);
+  buildCouch(THREE, kit.fabric, kit.wood);
+  buildTable(kit.wood, 1.55, 0.75);
+  const lamp = buildLamp(THREE, kit.metal, -2.0, 0.5);
   group.add(lamp);
+
+  const props = buildProps(THREE, group, kit);
+
+  const woodMaterial = new THREE.MeshStandardMaterial({ map: woodTexture(THREE), vertexColors: true, roughness: 0.55 });
+  const fabricMaterial = new THREE.MeshStandardMaterial({ map: plaidTexture(THREE), color: ROOM.couch, vertexColors: true, roughness: 0.95 });
+  const matteMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
+  const glossMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.05 });
+  const metalMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.85 });
+  const artMaterial = new THREE.MeshStandardMaterial({ map: atlas.texture, vertexColors: true, roughness: 0.75 });
+  const glowMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false });
+  for (const [batch, material, cast] of [
+    [kit.wood, woodMaterial, true],
+    [kit.fabric, fabricMaterial, true],
+    [kit.matte, matteMaterial, true],
+    [kit.gloss, glossMaterial, true],
+    [kit.metal, metalMaterial, true],
+    [kit.art, artMaterial, false],
+    [kit.glow, glowMaterial, false],
+  ]) {
+    const mesh = batch.mesh(material, { cast });
+    if (mesh) group.add(mesh);
+  }
 
   scene.add(group);
 
-  // Base light. Low and cool, so the warm lamp and the TV both read as sources.
-  const sky = new THREE.HemisphereLight(0x3a3550, 0x140f16, 0.55);
+  // Base light. Low and cool, so the warm lamps and the TV all read as sources.
+  const sky = new THREE.HemisphereLight(0x3d3656, 0x1a1210, 0.5);
   scene.add(sky);
-  const fill = new THREE.DirectionalLight(0xffd9b0, 0.32);
-  fill.position.set(2.4, 3.2, 2.6);
+  const fill = new THREE.DirectionalLight(0xffd9b0, 0.22);
+  fill.position.set(2.4, 2.8, 2.6);
   scene.add(fill);
 
-  return { group, lamp, lampBulb: lamp.userData.bulb, sky, fill };
+  return { group, lamp, lampBulb: lamp.userData.bulb, sky, fill, update: props.update };
 }

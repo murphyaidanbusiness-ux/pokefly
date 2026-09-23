@@ -39,15 +39,64 @@ export const GAMEBOY_SHADES = [
 ];
 
 export const ROOM = {
-  floor: 0x3a2a20,
-  wall: 0x2e2733,
-  rug: 0x6d2f33,
-  couch: 0x4a5a6b,
-  couchDark: 0x35424f,
-  wood: 0x5a3b26,
+  floor: 0x8a6a52,
+  wall: 0xc9b9c2,
+  rug: 0xd8ccc0,
+  couch: 0xffffff,
+  couchDark: 0xa9b3b8,
   tv: 0x26262c,
-  metal: 0x8d939c,
 };
+
+/**
+ * The late-1990s living room, one name per colour. Canvas textures take the
+ * string, materials and vertex colours take `hex(RETRO.name)`. Slightly
+ * desaturated on purpose: dusty teal and mauve, mustard, rust, wood browns,
+ * beige plastic, so the TV's cold light and the warm lamps are what pop.
+ */
+export const RETRO = {
+  // wood
+  walnut: '#4a2f1d',
+  walnutLight: '#6b4529',
+  oak: '#9a6b40',
+  veneer: '#7a5232',
+  // fabric and paint
+  teal: '#2f6f6c',
+  tealDeep: '#1e4a4d',
+  tealLight: '#5c9a92',
+  mauve: '#8c5e78',
+  mauveDeep: '#5e3a52',
+  mustard: '#c99a2e',
+  mustardLight: '#e0bd62',
+  rust: '#a24a26',
+  burgundy: '#6e2433',
+  cream: '#e9dcc0',
+  creamDark: '#bfae8c',
+  olive: '#5f6b3a',
+  leaf: '#3f6b3a',
+  leafLight: '#6d9a4f',
+  terracotta: '#b2603c',
+  // plastic and metal
+  beige: '#cfc4aa',
+  beigeDark: '#9f957d',
+  greyPlastic: '#8d8f93',
+  charcoal: '#2b2b31',
+  black: '#151518',
+  chrome: '#c9ccd2',
+  cable: '#4a4d55',
+  brass: '#b8923f',
+  // light
+  lavaWax: '#ff5a3c',
+  lavaGlass: '#ff3d8b',
+  moon: '#dfe8ff',
+  sky: '#101a3a',
+  ledGreen: '#63ff9a',
+  ledRed: '#ff4a3a',
+  water: '#2a8fb0',
+  goldfish: '#ff8a2a',
+};
+
+/** '#rrggbb' to 0xrrggbb, for materials and vertex colours. */
+export const hex = (css) => parseInt(css.slice(1), 16);
 
 export const FLY = {
   thorax: 0xb9844a,
@@ -65,7 +114,7 @@ export const FLY = {
 /** Where the camera sits for each of the four views, and what it looks at.
  *  `1` `2` `3` `4` in the browser pick these. */
 export const VIEWS = {
-  1: { name: 'the living room', eye: [3.40, 1.80, 2.30], look: [0.10, 0.80, 0.25] },
+  1: { name: 'the living room', eye: [3.30, 1.80, 2.35], look: [-0.20, 0.80, 0.15] },
   2: { name: 'the TV', eye: [0.02, 1.02, -0.62], look: [0.0, 0.86, -1.7] },
   3: { name: 'the fly', eye: [0.95, 1.30, 0.20], look: [0.0, 1.00, 1.35] },
   4: { name: 'the brain monitor', eye: [2.05, 1.32, 2.05], look: [1.55, 0.86, 0.75] },
@@ -76,6 +125,11 @@ export const VIEWS = {
  *  front legs are all in shot. The fly sits at (0, 0.54, 1.42) facing the TV
  *  (-z); its pad is at about (0, 0.64, 1.04). */
 export const PORTRAIT_FLY = { eye: [0.62, 1.12, 0.35], look: [0.0, 0.74, 1.3], fov: 34 };
+
+/** Where the controller cable touches the rug in front of the couch. The part
+ *  from the console to here is room furniture (props.js); the part from here
+ *  up to the pad moves with the fly (fly.js). */
+export const CABLE_FLOOR = [0.06, 0.012, 0.84];
 
 /** How much of the portrait frame the TV close-up takes, from the top. */
 export const PORTRAIT_TV_SHARE = 0.45;

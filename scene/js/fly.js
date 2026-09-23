@@ -27,7 +27,8 @@
  * a hand-drawn `Shape` for the wings.
  */
 
-import { FLY, POOL_HEX, POOLS, approach, clamp } from './theme.js';
+import { Batch } from './batch.js';
+import { CABLE_FLOOR, FLY, POOL_HEX, POOLS, RETRO, approach, clamp, hex } from './theme.js';
 
 const PRESS_SECONDS = 0.17;
 const GOLD_SECONDS = 1.6; // the milestone pulse: three beats, then gone
@@ -91,15 +92,18 @@ function limb(THREE, material, from, to, radiusFrom, radiusTo) {
   return mesh;
 }
 
+/** A leg is three tapered segments with a ball at each joint, merged into one
+ *  mesh: six legs of six parts each would otherwise be 36 draw calls, twice
+ *  over with the shadow pass. */
 function leg(THREE, material, points, radii) {
-  const group = new THREE.Group();
+  const batch = new Batch(THREE);
   for (let i = 0; i < points.length - 1; i += 1) {
-    group.add(limb(THREE, material, points[i], points[i + 1], radii[i], radii[i + 1]));
-    const joint = new THREE.Mesh(new THREE.SphereGeometry(radii[i + 1] * 1.5, 8, 6), material);
-    joint.position.copy(points[i + 1]);
-    group.add(joint);
+    const a = points[i];
+    const b = points[i + 1];
+    batch.rod([a.x, a.y, a.z], [b.x, b.y, b.z], radii[i + 1], 8, { radiusFrom: radii[i] });
+    batch.sphere(radii[i + 1] * 1.5, { x: b.x, y: b.y, z: b.z }, 8, 6);
   }
-  return group;
+  return batch.mesh(material, { cast: true, receive: false });
 }
 
 function wingGeometry(THREE) {
@@ -146,6 +150,7 @@ export class FlyActor {
     this._wings(THREE);
     this._legs(THREE);
     this._controller(THREE);
+    this._cable(THREE);
     scene.add(this.group);
   }
 
@@ -447,6 +452,32 @@ export class FlyActor {
     start.castShadow = true;
     this.pad.add(start);
     this.buttons.START = start;
+  }
+
+  /** The controller's cable, from the top edge of the pad down to the rug
+   *  at CABLE_FLOOR, where the room's half of it (props.js) carries on to
+   *  the console. It hangs from the pad, so it moves when the fly does. */
+  _cable(THREE) {
+    this.group.updateMatrixWorld(true);
+    const local = (x, y, z) => this.pad.worldToLocal(new THREE.Vector3(x, y, z));
+    const [fx, fy, fz] = CABLE_FLOOR;
+    const curve = new THREE.CatmullRomCurve3(
+      [
+        new THREE.Vector3(0.0, 0.0, -PAD_D / 2 + 0.005),
+        new THREE.Vector3(0.0, -0.01, -PAD_D / 2 - 0.04),
+        local(0.02, 0.4, 0.9),
+        local(fx - 0.02, 0.1, fz + 0.03),
+        local(fx, fy, fz),
+      ],
+      false,
+      'centripetal',
+    );
+    const cable = new THREE.Mesh(
+      new THREE.TubeGeometry(curve, 40, 0.009, 5, false),
+      new THREE.MeshStandardMaterial({ color: hex(RETRO.cable), roughness: 0.45 }),
+    );
+    cable.castShadow = true;
+    this.pad.add(cable);
   }
 
   // -- driving ----------------------------------------------------------
