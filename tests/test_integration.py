@@ -33,3 +33,25 @@ def test_missing_rom_exits_with_code_2(tmp_path):
     with pytest.raises(SystemExit) as excinfo:
         run_loop(cfg)
     assert excinfo.value.code == 2
+
+
+@pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present")
+def test_pause_holds_the_game_and_resumes():
+    """Pressing the pause key stops ticking, releases the buttons, and a second press resumes."""
+    from flybrain.config import Config
+    from flybrain.loop import LoopOptions, run_loop
+
+    polls = []
+
+    def toggle() -> bool:
+        # Tick 20 pauses. Inside the hold the loop polls again; the fourth
+        # poll during the hold resumes. Nothing else ever pauses.
+        polls.append(1)
+        n = len(polls)
+        return n == 20 or n == 24
+
+    cfg = Config(rom_path=ROM, headless=True, uncapped=True, hud=False, max_steps=60)
+    summary = run_loop(cfg, observers=(), options=LoopOptions(pause_toggle=toggle))
+    assert summary["steps"] == 60
+    # 60 ticks poll 60 times, plus the 4 polls inside the hold
+    assert len(polls) == 64

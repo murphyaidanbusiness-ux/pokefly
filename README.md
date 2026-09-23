@@ -64,7 +64,9 @@ saying which brain it loaded and how long it trained. `--naive` ignores it.
 | `--learn` | keep learning while you watch |
 | `--save-brain` | with `--learn`, write the brain back on exit |
 
-Ctrl+C exits cleanly: buttons released, emulator closed, cursor restored.
+`P` or `Space` in the terminal pauses: the buttons come up, the game and the
+brain stand still, and the same key resumes. Ctrl+C exits cleanly: buttons
+released, emulator closed, cursor restored.
 
 There is no install step. `run.py` puts `src/` on `sys.path` itself.
 

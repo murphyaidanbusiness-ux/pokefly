@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -178,6 +178,47 @@ class LoopOptions:
     pace_hz: float = 0.0  # >0: sleep so the loop runs at this many ticks a
     # second. PyBoy's null window does not limit speed,
     # so watching a headless run needs this.
+    pause_toggle: Callable[[], bool] | None = None  # polled once per tick; True
+    # flips pause. None means "read P or Space from the
+    # terminal when there is one" (see `terminal_pause_key`).
+
+
+def terminal_pause_key() -> Callable[[], bool] | None:
+    """A non-blocking reader for P or Space on a Windows console, else None.
+
+    A pipe or a redirected stdin has no keyboard, and the POSIX equivalent
+    needs termios games this project does not want; there Ctrl+C is the only
+    control and the pause key is simply absent.
+    """
+    try:
+        import msvcrt  # Windows only
+    except ImportError:
+        return None
+    if not sys.stdin.isatty():
+        return None
+
+    def poll() -> bool:
+        hit = False
+        while msvcrt.kbhit():
+            if msvcrt.getwch().lower() in ("p", " "):
+                hit = not hit
+        return hit
+
+    return poll
+
+
+def _hold(emulator: Emulator, fly: Fly, toggle: Callable[[], bool], watchers: list[object]) -> None:
+    """Pause: buttons up, nothing ticks, until the key is pressed again.
+
+    The game and the brain both stand still, so what the couch scene shows is
+    the last state it was sent; the socket stays open, so the TV keeps the
+    last frame rather than going to static.
+    """
+    fly.motor.release_all()
+    print("paused (P or Space to resume, Ctrl+C to quit)", flush=True)
+    while not toggle():
+        time.sleep(0.05)
+    print("resumed", flush=True)
 
 
 def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions | None = None) -> dict:
@@ -225,8 +266,15 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
     period = 1.0 / options.pace_hz if options.pace_hz > 0 else 0.0
     started = time.perf_counter()
     deadline = started + period
+    toggle = options.pause_toggle if options.pause_toggle is not None else terminal_pause_key()
+    paused_for = 0.0
     try:
         while cfg.max_steps == 0 or step < cfg.max_steps:
+            if toggle is not None and toggle():
+                held = time.perf_counter()
+                _hold(emulator, fly, toggle, watchers)
+                paused_for += time.perf_counter() - held
+                deadline = time.perf_counter() + period
             if not emulator.tick():
                 break
             step += 1
@@ -240,7 +288,7 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
     except KeyboardInterrupt:
         pass
     finally:
-        elapsed = time.perf_counter() - started
+        elapsed = time.perf_counter() - started - paused_for
         fly.motor.release_all()
         if options.save_brain and options.brain_path is not None:
             fly.mushroom.save(options.brain_path)
