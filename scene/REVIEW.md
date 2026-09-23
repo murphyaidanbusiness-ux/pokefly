@@ -29,9 +29,9 @@ empty and the scene is still wrong, the browser console has the rest.
 | the picture | key `2` | the live game, Game Boy green, square pixels, faint scanlines, a slight curve to the glass |
 | green or gray | key `G` | the picture switches to plain gray and back |
 | the TV as key light | watch a dark room in game, then a bright one | the whole room dims and brightens with the game. This is the thing most worth checking |
-| the fly | key `3` | clearly a fruit fly: big red compound eyes, tan thorax, striped abdomen, two translucent wings, six segmented legs, antennae, a proboscis, sitting upright holding a controller |
+| the fly | key `3` | clearly a fruit fly: big red compound eyes, tan thorax, striped abdomen, two translucent wings, six segmented legs, antennae, a proboscis, sitting upright holding a controller (round four below has the close-up pass) |
 | button presses | key `3`, watch the pad | the pressed control goes down and lights in its own colour, the d-pad tilts the way the fly is walking, the front leg on that side pokes it. This should read without being told |
-| the head glow | any view | a glow inside the head that tracks the firing rate, gold when something went better than expected and cold blue when it went worse |
+| the head glow | any view | a glow on the crown of the head and a ring of light round it that track the firing rate, gold when something went better than expected and cold blue when it went worse |
 | antennae | after a new room is entered | they perk up on a big positive dopamine flash and droop on a negative one |
 | the startle | wait for a panic (the HUD counts them) | wings buzz, the fly hops off the cushion, the camera shakes |
 | grooming | when START fires | the front legs come off the pad and rub together |
@@ -58,9 +58,12 @@ empty and the scene is still wrong, the browser console has the rest.
 4. **The wings.** Their orientation is the fiddliest piece of arithmetic in the
    fly and the easiest thing to have got backwards. They should sweep back over
    the abdomen, not stick out sideways or through the body.
-5. **The controller in the front legs.** The legs are posed, not solved: the
-   tips were placed at the pad by hand. If a leg misses the pad, the points are
-   in `FlyActor._legs` and the pad is at `(0, 0.10, -0.38)` in the same frame.
+5. **The controller in the front legs.** Since round four the front legs are
+   solved every frame (`FlyActor._reach`): each foot is aimed at a point on
+   the pad and a two-bone reach bends the knee. If a foot misses its control,
+   the aim points are `BUTTON_AT` and `BUTTON_TOP` in `fly.js`, the hips are
+   `this.hips` in `FlyActor._legs`, and the pad is at `(0, 0.10, -0.38)` in
+   the same frame.
 6. **The raster rows.** 256 neurons in a 240 pixel canvas is tight. If the
    hidden band is a solid block rather than a speckle, `HIDDEN_HEIGHT` in
    `monitor.js` wants more room.
@@ -69,8 +72,9 @@ empty and the scene is still wrong, the browser console has the rest.
 
 - No downloaded models or textures. Every shape is a three.js primitive, a
   lathe, a tube, or a hand-drawn `Shape`; every texture is a canvas drawn in
-  code (`scene/js/textures.js`, plus the controller labels in `fly.js`), and
-  everything printed in the room shares one 512 px atlas.
+  code (`scene/js/textures.js`, the fly's in `scene/js/flyskin.js`, plus the
+  controller labels in `fly.js`), and everything printed in the room shares
+  one 512 px atlas.
 - Only three.js is vendored (`scene/vendor/`, r186, MIT, with its LICENCE). The
   orbit control is ours, in `scene/js/orbit.js`, because it is eighty lines and
   vendoring the example version would have needed an import map.
@@ -225,3 +229,79 @@ allocates nothing. There is still one shadow-casting light, the TV.
    darken it or take it out.
 3. The clock uses the browser's time zone, so a recording shows the time it
    was recorded.
+
+## Round four: the fly as a character
+
+This round was looked at the same way as round three (headless Chromium,
+SwiftShader, 1280x720, 1920x1080 and 1080x1920, every view), plus close-ups
+from five angles and with each cue held on through a temporary hook
+(grooming, the eye wipe, panic, a press of each side, battle, gold, cold, a
+quiet brain). The hook is gone. Not yet seen on a real GPU or a phone.
+
+The model is `scene/js/fly.js`; its textures (eye facets, wing, cuticle
+pitting, the crown's glow mask, a small painted reflection of the room) are
+drawn in `scene/js/flyskin.js`; its colours are `FLY` in `theme.js`.
+`Batch.add` gained a `paint` option: a function that colours each vertex
+from where it is in the part's own frame, so stripes and bands are vertex
+colours rather than textures.
+
+### The fly pass
+
+| look at | where | what it should be |
+|---|---|---|
+| the eyes | portrait, key `3` | big, orange at the top front to deep red below, covered in small domed hexagonal facets that each catch the light, a glossy coat with a small reflection of the TV in it |
+| the pseudopupil | any view, orbit round | a dark patch of facets on each eye that stays pointed at the camera as it moves, so the fly seems to look at you |
+| the head | portrait | a tan capsule between the eyes with an orange stripe up the face, a darker crown with three small red ocelli, short bristles, a proboscis ending in a small pink-tan labellum, two orange-brown antenna clubs with feathered aristae |
+| the thorax | key `3`, orbit above | golden tan, four darker stripes down the back, a paler side, a small shield (scutellum) behind, rows of dark bristles raked backward, a lacquered sheen that shifts toward teal and bronze in the highlights. Never gross |
+| the abdomen | orbit above or behind | six overlapping plates, each golden in front with a dark band at the back and a pale notch down the middle, pale underneath, the tip curled down. It pumps slowly |
+| the wings | orbit above | folded in a narrow V over the abdomen: clear, faintly rainbow-tinted, brown veins (five long ones, two cross-veins), a fringe of hairs on the trailing edge. The halteres are the little drumsticks behind them |
+| the legs | key `3` | coxa, femur, tibia, five tarsal beads, two claws and two pale pulvilli on each; body-coloured near the body, darkening toward the feet; short spines down each |
+| idle life | any close view, wait | the abdomen breathes, an antenna twitches every few seconds, the wings shiver now and then, and every five to ten seconds the fly shifts its weight to one side and cocks its head the other way |
+
+### The cues, again (they must still read)
+
+| cue | what it should be now |
+|---|---|
+| a press | the front leg on that side reaches to the very control pressed (the left foot to the d-pad arm, the right foot to A, B or START) and pushes it down; the control lights and goes down; the d-pad tilts. At rest each foot hovers over its side of the pad |
+| head glow | a glow on the crown and the ocelli, and a soft ring of light hugging the outline of the head, faint when the brain is quiet and bright when it is busy. A small light in front of the face warms the pad and front legs with the same colour |
+| gold / blue | the ring and crown go gold on good news and cold blue on bad; the antennae perk up and spread, or droop and splay outward |
+| panic | the wings lift above the back, spread and buzz into two translucent fans; the fly hops; the camera shakes |
+| START | the right foot taps START, then both front feet come up under the face and rub together, then wipe down over the eyes twice while the head tips down, then go back to the pad (about 1.8 s) |
+| battle | the fly scoots forward and tips toward the TV, lifts its abdomen, and tips its head back up to keep its eyes on the screen |
+
+### Cost
+
+Measured with `renderer.info` through a temporary hook (removed), shadow
+pass included, fly visible versus hidden:
+
+| | before | after |
+|---|---|---|
+| draw calls, fly body (no controller), portrait | 43 | 21 (23 while the wings buzz) |
+| draw calls, whole scene, view `1` landscape | 129 | 105 |
+| draw calls, whole scene, portrait composition | 109 | 83 |
+| triangles, fly body geometry | about 7.8k | about 25.8k |
+| triangles drawn for the fly body, shadow pass included | 15.5k | 51k |
+| triangles drawn, view `1` / portrait | 82k / 112k | 118k / 147k |
+
+The body is five meshes (body with legs and bristles, abdomen, head, eyes,
+aura), two antennae, two wings, and four front-leg pieces; the two wing
+blurs only draw during a panic. `update` allocates nothing. No light casts a
+shadow except the TV; the small brain light is shadowless, as before. The
+materials are `MeshPhysicalMaterial` (clear coat, thin film, bump), which
+costs more per pixel than the old standard material: in SwiftShader the
+frame took roughly 10 to 20 percent longer, which is the number to watch on
+a real laptop GPU.
+
+### Likeliest to be wrong
+
+1. The glow ring's strength on a real screen (`_glow` in `fly.js`, `aura`).
+   On the teal couch it should read as a glow, not a bubble; if it looks
+   like a helmet, lower the numbers there or the `2.2` in the aura shader.
+2. The thin-film glints on the thorax (`iridescence*` and `specularColor`
+   on the `chitin` material). On a calibrated screen they may look more
+   rainbow than teal and bronze.
+3. The front feet on the pad. They are aimed at `BUTTON_AT` plus
+   `BUTTON_TOP`; if a foot hovers or sinks into a control, those and the
+   `0.03` hover and `0.042` push in `_reach` are the dials.
+4. The portrait framing (`PORTRAIT_FLY`) was raised a little so the ring of
+   glow and the antennae clear the top of the band.

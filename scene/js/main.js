@@ -90,7 +90,7 @@ function boot() {
   });
   journey.onFlash = () => fly.milestonePulse();
 
-  const signals = { firing: 0.08, dopamine: 0, inBattle: false };
+  const signals = { firing: 0.08, dopamine: 0, inBattle: false, screen: 0.35 };
   let hello = null;
   let lastStaticAt = 0;
   let shadowsOn = true;
@@ -218,6 +218,7 @@ function boot() {
       television.showStatic();
     }
 
+    signals.screen = television.smoothLuminance;
     fly.update(dt, signals);
     television.update(dt);
     room.update(dt, elapsed);

@@ -40,10 +40,30 @@ export class Batch {
   /**
    * Adds a geometry (which it takes ownership of and transforms in place).
    * Options: x y z, rx ry rz (radians, XYZ order), sx sy sz or s, color (hex),
-   * uv [u0 v0 u1 v1] into an atlas, uvScale [su sv].
+   * uv [u0 v0 u1 v1] into an atlas, uvScale [su sv]. `paint(color, x, y, z)`
+   * instead of `color` sets each vertex's colour from where it is in the
+   * part's own frame, before any of the transform: stripes, bands, a fade.
    */
   add(geometry, o = {}) {
     const THREE = this.THREE;
+    const count = geometry.attributes.position.count;
+    const colors = new Float32Array(count * 3);
+    if (o.paint) {
+      const position = geometry.attributes.position;
+      for (let i = 0; i < count; i += 1) {
+        o.paint(this._c.setHex(0xffffff), position.getX(i), position.getY(i), position.getZ(i));
+        colors[i * 3] = this._c.r;
+        colors[i * 3 + 1] = this._c.g;
+        colors[i * 3 + 2] = this._c.b;
+      }
+    } else {
+      this._c.setHex(o.color ?? 0xffffff);
+      for (let i = 0; i < count; i += 1) {
+        colors[i * 3] = this._c.r;
+        colors[i * 3 + 1] = this._c.g;
+        colors[i * 3 + 2] = this._c.b;
+      }
+    }
     if (o.q) {
       this._q.copy(o.q);
     } else {
@@ -58,15 +78,6 @@ export class Batch {
     );
     this._local.premultiply(this.base);
     geometry.applyMatrix4(this._local);
-
-    const count = geometry.attributes.position.count;
-    this._c.setHex(o.color ?? 0xffffff);
-    const colors = new Float32Array(count * 3);
-    for (let i = 0; i < count; i += 1) {
-      colors[i * 3] = this._c.r;
-      colors[i * 3 + 1] = this._c.g;
-      colors[i * 3 + 2] = this._c.b;
-    }
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const uv = geometry.attributes.uv;

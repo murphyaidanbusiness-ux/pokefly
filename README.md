@@ -124,12 +124,12 @@ the port.
 | what you see | what it means |
 |---|---|
 | a control on the pad goes down and the front leg pokes it | that button is being pressed right now; the d-pad tilts the way the fly is walking |
-| the glow inside the head | the share of neurons firing; brighter is busier |
+| the glow on and around the head | the share of neurons firing; brighter is busier |
 | the glow flashes gold, antennae perk up | dopamine: something went better than expected (a new tile, a new room) |
 | the glow goes cold blue, antennae droop | worse than expected |
 | wings buzz, the fly hops, the camera shakes | the panic reflex (stuck for 200 ticks) |
-| the front legs rub together | START fired (a grooming bout) |
-| the fly leans in | a battle |
+| the front legs rub together, then wipe the eyes | START fired (a grooming bout) |
+| the fly leans in toward the TV | a battle |
 | the box by the couch | a live spike raster: seven coloured rows are the motor pools, the band below is 200 other neurons; the bars on top are the seven learned biases |
 | the room brightens and dims | the TV is the key light and follows the game picture |
 

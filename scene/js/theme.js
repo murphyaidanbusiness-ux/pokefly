@@ -98,15 +98,31 @@ export const RETRO = {
 /** '#rrggbb' to 0xrrggbb, for materials and vertex colours. */
 export const hex = (css) => parseInt(css.slice(1), 16);
 
+/** The fly. Golden tan with dark bands, the same character as the first
+ *  episodes, now with the parts a real fly has. Canvas textures for the eyes
+ *  and wings take the `css` strings; everything else is vertex colours. */
 export const FLY = {
-  thorax: 0xb9844a,
-  thoraxDark: 0x6d4a28,
-  head: 0xa8763f,
-  eye: 0xe03a2b,
-  stripeLight: 0xc79a5b,
-  stripeDark: 0x46311f,
+  thorax: 0xc08a4c, // the golden tan of the back
+  thoraxDark: 0x6d4a28, // the stripes down the back, the scutellum's rim
+  pleura: 0xd7ab6c, // the paler sides of the thorax
+  belly: 0x8a5e34, // under the thorax, between the legs
+  head: 0xc7924f,
+  crown: 0x7a4020, // the dark triangle round the ocelli on top of the head
+  vitta: 0xb4552c, // the orange-red stripe up the face between the eyes
+  stripeLight: 0xd3a35e, // the front of each abdominal plate
+  stripeDark: 0x46311f, // the dark band at the back of each plate
+  sternite: 0xe4c894, // the pale underside of the abdomen
   leg: 0x3a2a1c,
+  legBase: 0xb07d45, // coxae and femora start body coloured and darken out
+  bristle: 0x241810,
+  pulvillus: 0xf0dcc0, // the sticky pads under each foot
+  labellum: 0xe8b8a0, // the sponge at the end of the proboscis
+  ocellus: 0x7a1c14,
   wing: 0xdfe9f2,
+  vein: 'rgba(92, 64, 40, 0.92)',
+  eyeHot: '#f55a2c', // top front of the eye
+  eyeDeep: '#850a18', // bottom back
+  eyeRim: '#3c0608', // the lines between the facets
   pad: 0xb9b3a8,
   padDark: 0x2f333a,
 };
@@ -123,8 +139,9 @@ export const VIEWS = {
 /** The portrait layout's middle camera: in front of the fly, a little to its
  *  right and above, so the face, the head glow and the controller in its
  *  front legs are all in shot. The fly sits at (0, 0.54, 1.42) facing the TV
- *  (-z); its pad is at about (0, 0.64, 1.04). */
-export const PORTRAIT_FLY = { eye: [0.62, 1.12, 0.35], look: [0.0, 0.74, 1.3], fov: 34 };
+ *  (-z); its pad is at about (0, 0.64, 1.04). Aimed high enough that the
+ *  antennae and the ring of glow round the head clear the top of the band. */
+export const PORTRAIT_FLY = { eye: [0.62, 1.12, 0.35], look: [0.0, 0.79, 1.3], fov: 35 };
 
 /** Where the controller cable touches the rug in front of the couch. The part
  *  from the console to here is room furniture (props.js); the part from here
