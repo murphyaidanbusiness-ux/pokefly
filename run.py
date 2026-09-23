@@ -21,6 +21,19 @@ from flybrain.config import Config  # noqa: E402
 from flybrain.hud import Hud, PlainLog  # noqa: E402
 from flybrain.loop import LoopOptions, run_loop  # noqa: E402
 
+BEST_BRAIN = ROOT / "brains" / "latest.npz"
+JOURNEY_BRAIN = ROOT / "brains" / "journey.npz"
+
+
+def brain_save_target(brain: Path | None, best: Path = BEST_BRAIN, journey: Path = JOURNEY_BRAIN) -> Path:
+    """Where `--learn --save-brain` writes. Never the best brain: that file is
+    only ever replaced by training's evaluation blocks, and a brain that
+    learned while you watched has no block score. With no `--brain`, or a
+    `--brain` that is the best brain, it goes to `brains/journey.npz`."""
+    if brain is None or Path(brain).resolve() == Path(best).resolve():
+        return Path(journey)
+    return Path(brain)
+
 
 def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argparse.Namespace]:
     parser = argparse.ArgumentParser(description="A simulated fly brain plays Pokemon Red.")
@@ -37,7 +50,11 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
     parser.add_argument("--brain", type=Path, default=None, help="a saved mushroom body (default brains/latest.npz)")
     parser.add_argument("--naive", action="store_true", help="ignore any saved brain: the untrained fly")
     parser.add_argument("--learn", action="store_true", help="keep learning while you watch")
-    parser.add_argument("--save-brain", action="store_true", help="with --learn, write the brain back on exit")
+    parser.add_argument(
+        "--save-brain",
+        action="store_true",
+        help="with --learn, write the brain on exit: back to --brain, or brains/journey.npz (never brains/latest.npz)",
+    )
     parser.add_argument(
         "--start-state", action="store_true", help="start from states/bedroom.state instead of a cold boot"
     )
@@ -81,8 +98,12 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
     # PyBoy's null window runs as fast as the CPU allows (measured here: about
     # 1,400 ticks/s), so a watched headless run has to pace itself.
     pace = cfg.couch_pace_hz if (args.couch and not args.uncapped) else 0.0
+    save_path = None
+    if args.save_brain:
+        save_path = brain_save_target(args.brain)
+        print(f"--save-brain: the learned brain will be written to {save_path} on exit", flush=True)
     options = LoopOptions(
-        brain_path=brain_path, learn=args.learn, save_brain=args.save_brain, pace_hz=pace
+        brain_path=brain_path, learn=args.learn, save_brain=args.save_brain, save_path=save_path, pace_hz=pace
     )
     return cfg, options, args
 

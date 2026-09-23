@@ -63,7 +63,7 @@ score it was kept for and the episode that score came from. `--naive` ignores it
 | `--brain PATH` | load this mushroom body instead of `brains/latest.npz` |
 | `--naive` | ignore any saved brain: the untrained fly |
 | `--learn` | keep learning while you watch |
-| `--save-brain` | with `--learn`, write the brain back on exit. By default that is `brains/latest.npz`, so it replaces the best brain and drops its score; pass `--brain` a copy to keep the best |
+| `--save-brain` | with `--learn`, write the learned brain on exit: back to `--brain`, or to `brains/journey.npz` when there is no `--brain` or it names `brains/latest.npz`. It never writes the best brain, which only training's evaluation blocks may replace |
 
 `P` or `Space` in the terminal pauses: the buttons come up, the game and the
 brain stand still, and the same key resumes. Ctrl+C exits cleanly: buttons
@@ -125,22 +125,31 @@ ticks here. `--make-start-state` does only that and stops.
 | file | what it is | who reads it |
 |---|---|---|
 | `brains/training.npz` (`--out`) | the training state: always the latest weights, checkpointed every 10 episodes and on Ctrl+C | `train.py --resume` |
-| `brains/latest.npz` (`--best`) | the best brain so far by evaluation-block score, with that score and the episode it came from written inside | `run.py`, which prints both |
+| `brains/latest.npz` (`--best`) | the best brain so far by evaluation-block score, with that score, the episode it came from and the block size written inside | `run.py`, which prints the score and episode |
 
 Every `--eval-every` training episodes (10) the current weights play an
-**evaluation block**: `--eval-block` episodes (3) with learning off, on the same
+**evaluation block**: `--eval-block` episodes (6) with learning off, on the same
 fixed seeds every time (`seed + 8,000,000 + i`, clear of the training seeds and
-of the held-out 90000-90009 set), scored by mean reward. The weights are copied
-to the best file only when a block beats every score before it; a tie keeps the
-older brain. The weights a run ends on get a block too. Before any training the
-best file is scored if it has no score yet (a brain from before this existed),
-and a resumed brain with no score is scored as well, so the best file never
-holds a brain with a lower BLOCK score than the one you started from. That is
-a statement about three fixed seeds, not about the fly: see "Continued
-training" under The experiment, where it picked a brain that is worse on the
-held-out seeds. Both files are
-written to a temporary name and renamed into place, so a Ctrl+C at any moment
-leaves each one whole; at worst the best file is behind the training state.
+of the held-out 90000-90009 set), scored by mean reward.
+
+**One rule decides whether the best brain is replaced: the candidate's block
+score has to beat the incumbent's by at least `best_margin` (25, in
+`config.py`).** A higher number alone is not enough. One block episode's reward
+has a standard deviation of about 58, so a block mean is a noisy measurement,
+and keeping the plain maximum of many noisy scores keeps the luckiest block,
+not the best brain: that is exactly what happened with 3-episode blocks and no
+margin (see "Continued training" under The experiment). 25 is about one
+standard error of a 6-episode block. Every block row in the CSV carries the
+decision: `block_score`, `incumbent_score`, `margin` and `decision` (`first`
+when there was no best yet, `replaced`, `kept`, or `incumbent` when the block
+was scoring the best brain itself).
+
+The weights a run ends on get a block too. Before any training, a best file
+with no score, or with a score from a block of another size, is scored on the
+current block and the score written into it; a resumed brain with no score is
+scored as well and held to the same margin. Both files are written to a
+temporary name and renamed into place, so a Ctrl+C at any moment leaves each
+one whole; at worst the best file is behind the training state.
 
 **The learning-rate schedule.** Both readouts run at
 `lr = lr0 / (1 + episodes_trained / 100)` (`lr_decay_episodes` in `config.py`,
@@ -150,11 +159,12 @@ at half rate, and at 300 episodes it is a quarter. Every CSV row logs the rate
 the episode actually ran at (0 for a learning-off one).
 
 **Continuing training:** copy the brain you want to continue from to the
-training state, then resume. The best file only ever improves its block score.
-With a 3-episode block that is not yet the same as improving the fly (the
-measured block noise is about 34 reward points, larger than the differences it
-was choosing between), so check a new best on the held-out seeds with
+training state, then resume. The best file changes only on a clear win in
+block score. The margin rule has been validated offline on three brains (below)
+but not yet in a training run, so check a new best on the held-out seeds with
 `--evaluate` before you trust it, and keep a copy of the brain it replaced.
+Blocks cost training time: a block of N episodes every 10 training episodes
+adds N x 10% to the run, so 60% at the default 6 (it was 30% at 3).
 
 ```powershell
 Copy-Item brains\latest.npz brains\training.npz     # or keep the training.npz you have
@@ -176,7 +186,7 @@ in `brains/latest.npz`; pass `--best` a new path for a clean experiment.
 | `--best PATH` | the best brain (default `brains/latest.npz`) |
 | `--resume` | continue from the training state at `--out` |
 | `--eval-every K` | an evaluation block every K training episodes; 0 means no blocks and no best file |
-| `--eval-block N` | learning-off episodes per block (default 3) |
+| `--eval-block N` | learning-off episodes per block (default 6) |
 | `--log PATH` | one CSV row per episode, blocks included (default `runs/train.csv`) |
 | `--state PATH` | the start savestate |
 | `--make-start-state` | write the start savestate and stop |
@@ -616,7 +626,30 @@ by less than that. Keeping the maximum of sixteen noisy scores picks the
 luckiest block, not the best brain. The mechanism does what it says (the file
 only ever moves up in block score, and is never torn by an interrupt); what it
 measures is too small a sample. A longer block, or requiring a new best to beat
-the old one by a margin, is the obvious next step, and neither has been run.
+the old one by a margin, is the obvious next step.
+
+**The margin rule, checked offline.** Instead of another hour of training, the
+three brains in question were scored on the block seeds, ten episodes each
+(`train.py --evaluate BRAIN --eval-seed 8000000 --eval-episodes 10`). The first
+three episodes reproduce the training-time block scores exactly, so the
+evaluation is deterministic and these are the numbers training would have seen.
+
+| brain | 3-episode block | 6-episode block | 10-episode block | held-out (truth) |
+|---|---|---|---|---|
+| v1-2M (episode 100) | 206.7 | **212.7** | 204.5 | 10 of 10, 179.5 |
+| best by 3-block, episode 230 | 227.7 | 171.5 | 162.2 | 8 of 10, 124.4 |
+| training state, episode 250 | 125.3 | 141.0 | 159.8 | 10 of 10, 168.5 |
+
+With a 6-episode block and a 25-point margin, the sequence v1-2M, then episode
+230, then episode 250 keeps v1-2M at both steps: episode 230 is 41.2 below it
+and episode 250 is 71.7 below it. That agrees with the held-out truth, where
+v1-2M is best. It is not a full ranking: the 6-block puts episode 230 above
+episode 250, the reverse of the held-out order, and at 10 episodes the two are
+2.4 apart, well inside the noise. The rule gets the right answer here because
+it only ever asks "is the candidate clearly better than the incumbent", and
+neither was. A 10-episode block was not needed; it would make the blocks cost
+as much as the training itself (100% overhead). `brains/latest.npz` is v1-2M
+again, with its 6-episode block score of 212.7 written into it.
 
 ## What v1 did, for comparison
 
@@ -721,7 +754,7 @@ are the reasons, not excuses:
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-137 tests, all headless, about a minute. They pass with no ROM present; the
+144 tests, all headless, about a minute. They pass with no ROM present; the
 handful that need one skip when `roms/pokemon_red.gb` is absent, and the short
 training test also needs `states/bedroom.state`.
 

@@ -81,6 +81,7 @@ class MushroomBody:
         # when it is handed one.
         self.score: float | None = None
         self.score_episode: int | None = None
+        self.score_block: int | None = None  # how many episodes that score averages
 
     # -- schedule ----------------------------------------------------------
 
@@ -201,7 +202,14 @@ class MushroomBody:
             dtype=np.int64,
         )
 
-    def save(self, path: str | Path, *, score: float | None = None, score_episode: int | None = None) -> Path:
+    def save(
+        self,
+        path: str | Path,
+        *,
+        score: float | None = None,
+        score_episode: int | None = None,
+        score_block: int | None = None,
+    ) -> Path:
         """Write the weights. `score` and `score_episode` go in only when given:
         they describe these exact weights, so only the best-brain file has them.
 
@@ -215,6 +223,8 @@ class MushroomBody:
         if score is not None:
             extra["score"] = np.float64(score)
             extra["score_episode"] = np.int64(self.episodes_trained if score_episode is None else score_episode)
+            if score_block is not None:
+                extra["score_block"] = np.int64(score_block)
         partial = target.with_name(target.name + ".partial")
         with partial.open("wb") as handle:
             np.savez(
@@ -247,6 +257,7 @@ class MushroomBody:
             # is what makes training evaluate them before trusting them.
             self.score = float(data["score"]) if "score" in data.files else None
             self.score_episode = int(data["score_episode"]) if "score_episode" in data.files else None
+            self.score_block = int(data["score_block"]) if "score_block" in data.files else None
         self.e_actor = np.zeros_like(self.w_actor)
         self.e_critic = np.zeros_like(self.w_critic)
         self._scratch = np.zeros_like(self.w_actor)

@@ -9,6 +9,7 @@ written where and when, not about the game.
 
 from __future__ import annotations
 
+import csv
 from dataclasses import replace
 
 import numpy as np
@@ -16,13 +17,14 @@ import pytest
 
 from flybrain.config import POOL_NAMES, Config
 from flybrain.mushroom_body import MushroomBody
-from flybrain.training import CSV_FIELDS, CsvLog, EpisodeResult, Trainer, read_score
+from flybrain.training import CSV_FIELDS, CsvLog, EpisodeResult, Trainer, read_block_size, read_score
 
 TICKS = 100  # per scripted episode
 
 
 def config(**changes) -> Config:
-    return replace(Config(), **{"seed": 0, "checkpoint_every": 1, "eval_every": 1, "eval_block": 3, **changes})
+    settings = {"seed": 0, "checkpoint_every": 1, "eval_every": 1, "eval_block": 3, "best_margin": 2.0}
+    return replace(Config(), **{**settings, **changes})
 
 
 def episode_result(episode: int, kind: str, reward: float, mushroom: MushroomBody, seed: int, lr: tuple) -> EpisodeResult:
@@ -174,9 +176,9 @@ def test_a_log_with_an_older_header_is_refused(tmp_path):
 # -- keeping the best brain -----------------------------------------------------
 
 
-def test_block_scores_3_5_4_6_write_the_best_file_at_3_5_and_6_only(tmp_path, monkeypatch):
-    cfg = config()
-    best, out = tmp_path / "latest.npz", tmp_path / "training.npz"
+def best_writes(monkeypatch, best):
+    """Every write to the best file: (score in the file, episode in the file,
+    which training episode's weights it holds)."""
     writes = []
     original = MushroomBody.save
 
@@ -187,12 +189,49 @@ def test_block_scores_3_5_4_6_write_the_best_file_at_3_5_and_6_only(tmp_path, mo
         return written
 
     monkeypatch.setattr(MushroomBody, "save", spy)
+    return writes
+
+
+def test_the_margin_rule_replaces_only_on_a_clear_win(tmp_path, monkeypatch):
+    """Margin 2. Blocks 3, 5, 4, 6, 8: the first is the first; 5 beats 3 by
+    exactly the margin and replaces; 4 is lower and 6 is higher by only 1, both
+    kept; 8 beats 5 by 3 and replaces."""
+    cfg = config(best_margin=2.0)
+    best, out = tmp_path / "latest.npz", tmp_path / "training.npz"
+    writes = best_writes(monkeypatch, best)
+    log = CsvLog(tmp_path / "train.csv")
+    trainer = ScriptedTrainer(cfg, MushroomBody(cfg, 0), [3.0, 5.0, 4.0, 6.0, 8.0], out=out, best=best, log=log)
+    trainer.run(5 * TICKS)
+
+    assert writes == [(3.0, 1, 1.0), (5.0, 2, 2.0), (8.0, 5, 5.0)]
+    assert read_score(best) == (8.0, 5)
+    assert read_block_size(best) == 3
+
+    rows = list(csv.DictReader((tmp_path / "train.csv").open(encoding="utf-8")))
+    decisions = [
+        (int(r["episode"]), float(r["block_score"]), r["incumbent_score"], float(r["margin"]), r["decision"])
+        for r in rows
+        if r["kind"] == "block"
+    ]
+    expected = [
+        (1, 3.0, "", 2.0, "first"),
+        (2, 5.0, "3.0", 2.0, "replaced"),
+        (3, 4.0, "5.0", 2.0, "kept"),
+        (4, 6.0, "5.0", 2.0, "kept"),
+        (5, 8.0, "5.0", 2.0, "replaced"),
+    ]
+    assert decisions == [row for row in expected for _ in range(3)]  # one row per block episode
+    assert all(r["decision"] == "" and r["block_score"] == "" for r in rows if r["kind"] == "train")
+
+
+def test_with_no_margin_any_higher_block_replaces(tmp_path, monkeypatch):
+    cfg = config(best_margin=0.0)
+    best, out = tmp_path / "latest.npz", tmp_path / "training.npz"
+    writes = best_writes(monkeypatch, best)
     trainer = ScriptedTrainer(cfg, MushroomBody(cfg, 0), [3.0, 5.0, 4.0, 6.0], out=out, best=best)
     trainer.run(4 * TICKS)
 
-    # (score in the file, episode in the file, which episode's weights it holds)
     assert writes == [(3.0, 1, 1.0), (5.0, 2, 2.0), (6.0, 4, 4.0)]
-    assert read_score(best) == (6.0, 4)
     # Each block ran on the weights of the episode it follows, three episodes each.
     blocks = [call for call in trainer.calls if call[0] == "eval"]
     assert [call[1] for call in blocks] == [1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4]
@@ -201,6 +240,27 @@ def test_block_scores_3_5_4_6_write_the_best_file_at_3_5_and_6_only(tmp_path, mo
     seeds = [r.seed for r in trainer.results if r.kind == "block"]
     assert seeds == list(trainer.block_seeds) * 4
     assert set(seeds).isdisjoint(range(90_000, 90_010))
+
+
+def test_a_best_scored_on_another_block_size_is_rescored(tmp_path):
+    """A 3-episode score is not comparable with a 6-episode one, so the best
+    file is scored again on the current block before anything is held to it."""
+    cfg = config(eval_every=10, eval_block=6)
+    out, best = tmp_path / "training.npz", tmp_path / "latest.npz"
+    old = MushroomBody(cfg, 0)
+    old.w_critic[0] = 50.0
+    old.episodes_trained = 50
+    old.save(best, score=227.7, score_episode=50, score_block=3)
+
+    trainer = ScriptedTrainer(cfg, MushroomBody(cfg, 0), [120.0, 0.0], out=out, best=best)
+    trainer.run(TICKS)
+    assert [call[2] for call in trainer.calls[:6]] == [50.0] * 6
+    assert read_score(best) == (120.0, 50) and read_block_size(best) == 6
+
+
+def test_the_defaults_are_a_6_episode_block_and_a_25_point_margin():
+    cfg = Config()
+    assert cfg.eval_block == 6 and cfg.best_margin == 25.0
 
 
 def test_the_training_state_is_always_the_latest_weights(tmp_path):
@@ -362,3 +422,59 @@ def test_a_brain_from_before_best_keeping_loads_with_no_score(tmp_path):
     assert read_score(tmp_path / "old.npz") == (None, None)
     mb.save(tmp_path / "scored.npz", score=179.5, score_episode=100)
     assert read_score(tmp_path / "scored.npz") == (179.5, 100)
+
+
+# -- run.py --learn --save-brain never writes the best brain ------------------------
+
+
+def test_save_brain_with_no_brain_flag_goes_to_journey():
+    import run
+
+    assert run.brain_save_target(None) == run.JOURNEY_BRAIN
+    assert run.JOURNEY_BRAIN.name == "journey.npz"
+
+
+def test_save_brain_never_targets_the_best_brain_however_it_is_spelled(tmp_path):
+    import run
+
+    best, journey = tmp_path / "brains" / "latest.npz", tmp_path / "brains" / "journey.npz"
+    spelled = tmp_path / "brains" / ".." / "brains" / "latest.npz"
+    assert run.brain_save_target(best, best, journey) == journey
+    assert run.brain_save_target(spelled, best, journey) == journey
+    assert run.brain_save_target(run.BEST_BRAIN) == run.JOURNEY_BRAIN
+    other = tmp_path / "brains" / "mine.npz"
+    assert run.brain_save_target(other, best, journey) == other
+
+
+def test_run_py_wires_the_guard_into_the_loop_options(monkeypatch):
+    import run
+
+    monkeypatch.setattr(run.Path, "is_file", lambda self: True)
+    _, options, _ = run.parse_args(["--learn", "--save-brain", "--brain", str(run.BEST_BRAIN)])
+    assert options.brain_path == run.BEST_BRAIN, "it still LOADS the best brain"
+    assert options.save_path == run.JOURNEY_BRAIN, "but never writes it"
+    _, options, _ = run.parse_args(["--learn", "--save-brain"])
+    assert options.save_path == run.JOURNEY_BRAIN
+    _, options, _ = run.parse_args(["--learn"])
+    assert options.save_path is None and not options.save_brain
+
+
+def test_the_loop_writes_the_save_path_and_not_the_brain_it_loaded(tmp_path, monkeypatch):
+    """The loop's own half of the guard: it writes `save_path`, never
+    `brain_path`. Checked on the exit path with a fake emulator."""
+    from conftest import ROM
+
+    if not ROM.is_file():
+        pytest.skip("roms/pokemon_red.gb not present")
+    from flybrain.loop import LoopOptions, run_loop
+
+    cfg = replace(Config(), rom_path=ROM, headless=True, uncapped=True, hud=False, max_steps=30, seed=0)
+    loaded = MushroomBody(cfg, cfg.seed).save(tmp_path / "latest.npz", score=179.5, score_episode=100, score_block=6)
+    before = loaded.read_bytes()
+    journey = tmp_path / "journey.npz"
+    run_loop(
+        cfg,
+        options=LoopOptions(brain_path=loaded, learn=True, save_brain=True, save_path=journey, pause_toggle=lambda: False),
+    )
+    assert journey.is_file()
+    assert loaded.read_bytes() == before

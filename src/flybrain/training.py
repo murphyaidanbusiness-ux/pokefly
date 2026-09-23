@@ -55,6 +55,10 @@ CSV_FIELDS = (
     "w_critic_abs",
     "lr_actor",
     "lr_critic",
+    "block_score",
+    "incumbent_score",
+    "margin",
+    "decision",
     "ticks_per_second",
     "seed",
 )
@@ -82,6 +86,14 @@ class EpisodeResult:
     # a training episode, 0 for a learning-off one.
     lr_actor: float = 0.0
     lr_critic: float = 0.0
+    # Block episodes only: the block's mean, the best score it was measured
+    # against (None when there was no best yet), the margin it had to clear,
+    # and what happened: "replaced", "kept", "first" (no best yet) or
+    # "incumbent" (the block scored the best brain itself).
+    block_score: float | None = None
+    incumbent_score: float | None = None
+    margin: float | None = None
+    decision: str = ""
 
     def row(self) -> dict:
         row = {
@@ -99,6 +111,10 @@ class EpisodeResult:
             "w_critic_abs": round(self.w_critic_abs, 6),
             "lr_actor": f"{self.lr_actor:.6g}",
             "lr_critic": f"{self.lr_critic:.6g}",
+            "block_score": "" if self.block_score is None else round(self.block_score, 3),
+            "incumbent_score": "" if self.incumbent_score is None else round(self.incumbent_score, 3),
+            "margin": "" if self.margin is None else self.margin,
+            "decision": self.decision,
             "ticks_per_second": round(self.ticks_per_second, 1),
             "seed": self.seed,
         }
@@ -255,6 +271,12 @@ class CsvLog:
             writer.writerow(result.row())
 
 
+def read_block_size(path: Path) -> int | None:
+    """How many episodes the recorded score was averaged over, or None."""
+    with np.load(Path(path)) as data:
+        return int(data["score_block"]) if "score_block" in data.files else None
+
+
 def read_score(path: Path) -> tuple[float | None, int | None]:
     """The block score a brain file records and the episode it came from, or
     (None, None) for a brain written before best-keeping."""
@@ -265,22 +287,33 @@ def read_score(path: Path) -> tuple[float | None, int | None]:
 
 
 class BestKeeper:
-    """The best-brain file: written only when a block score beats every score
-    before it, and the file carries that score and the episode it came from."""
+    """The best-brain file, and the one rule for replacing it: a candidate's
+    block score has to beat the incumbent's by at least `margin`. A higher
+    number is not enough, because one block is a noisy measurement: picking
+    the plain maximum of many noisy scores picks the luckiest block. The file
+    carries its score, the episode it came from and the block size."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, margin: float = 0.0, block: int | None = None) -> None:
         self.path = Path(path)
+        self.margin = float(margin)
+        self.block = block
         self.score: float | None = None
         self.episode: int | None = None
 
-    def offer(self, mushroom: MushroomBody, score: float, episode: int) -> bool:
-        """Write `mushroom` as the best brain if `score` beats the best so far.
-        A tie keeps the older brain: same evidence, fewer updates since."""
-        if self.score is not None and score <= self.score:
-            return False
-        mushroom.save(self.path, score=score, score_episode=episode)
-        self.score, self.episode = float(score), int(episode)
-        return True
+    def decide(self, score: float) -> str:
+        """"first" with no incumbent, else "replaced" or "kept"."""
+        if self.score is None:
+            return "first"
+        return "replaced" if score - self.score >= self.margin else "kept"
+
+    def offer(self, mushroom: MushroomBody, score: float, episode: int) -> str:
+        """Write `mushroom` as the best brain when the rule says so. Returns
+        the decision."""
+        decision = self.decide(score)
+        if decision != "kept":
+            mushroom.save(self.path, score=score, score_episode=episode, score_block=self.block)
+            self.score, self.episode = float(score), int(episode)
+        return decision
 
     def describe(self) -> str:
         if self.score is None:
@@ -318,7 +351,7 @@ class Trainer:
         self.eval_block = cfg.eval_block if eval_block is None else eval_block
         # No evaluation blocks means no scores, so nothing to keep a best by.
         keeping = best is not None and self.eval_every > 0 and self.eval_block > 0
-        self.best = BestKeeper(best) if keeping else None
+        self.best = BestKeeper(best, cfg.best_margin, self.eval_block) if keeping else None
         self.log = log
         self.say = say or (lambda line: print(line, flush=True))
         self.results: list[EpisodeResult] = []
@@ -347,17 +380,37 @@ class Trainer:
             self.log.write(result)
         self.say(result.line())
 
-    def block(self, episode: int) -> float:
+    def block(self, episode: int) -> tuple[float, list[EpisodeResult]]:
         """One evaluation block of `self.mushroom`, learning off. The score is
-        the mean reward over the block."""
-        rewards = []
+        the mean reward over the block. The rows are printed as they finish
+        and logged by `_log_block` once the block's decision is known."""
+        results = []
         for seed in self.block_seeds:
             result = self.eval_episode(episode, seed)
-            self._record(result)
-            rewards.append(result.reward)
-        return float(np.mean(rewards))
+            self.say(result.line())
+            results.append(result)
+        return float(np.mean([r.reward for r in results])), results
 
-    def _score_other(self, brain: MushroomBody, episode: int) -> float:
+    def _log_block(self, results: list[EpisodeResult], score: float, incumbent: float | None, decision: str) -> None:
+        for result in results:
+            result.block_score, result.incumbent_score, result.decision = score, incumbent, decision
+            result.margin = self.best.margin if self.best is not None else None
+            self.results.append(result)
+            if self.log is not None:
+                self.log.write(result)
+
+    def _offer(self, results: list[EpisodeResult], score: float, episode: int, what: str) -> None:
+        keeper = self.best
+        incumbent = keeper.score
+        decision = keeper.offer(self.mushroom, score, episode)
+        self._log_block(results, score, incumbent, decision)
+        against = "no best yet" if incumbent is None else f"best {incumbent:.1f} + margin {keeper.margin:g}"
+        self.say(
+            f"{what}: score {score:.1f} against {against}: {decision}"
+            + (f", written to {keeper.path}" if decision != "kept" else "")
+        )
+
+    def _score_other(self, brain: MushroomBody, episode: int) -> tuple[float, list[EpisodeResult]]:
         """A block for a brain that is not the one being trained. The swap is
         undone however the block ends, so a Ctrl+C in here still checkpoints
         the training weights and not these."""
@@ -372,10 +425,11 @@ class Trainer:
         """Before any training: know what the best file is worth, and give a
         resumed brain its chance, so the best is never silently a worse brain.
 
-        A best file with no recorded score (written before best-keeping) is
-        evaluated and its score written into it. A resumed brain with no score
-        is evaluated too, unless its weights are the best file's, whose score
-        it then shares.
+        A best file with no recorded score (written before best-keeping), or a
+        score from a block of another size, is evaluated and its score written
+        into it. A resumed brain with no score is evaluated too, unless its
+        weights are the best file's, whose score it then shares. The resumed
+        brain is held to the same margin as any other candidate.
         """
         keeper = self.best
         if keeper is None:
@@ -384,11 +438,14 @@ class Trainer:
         if keeper.path.is_file():
             on_disk = MushroomBody(self.cfg, self.mushroom.seed)
             on_disk.load(keeper.path)
-            if on_disk.score is None:
-                self.say(f"best brain {keeper.path} has no score: evaluating it")
-                score = self._score_other(on_disk, on_disk.episodes_trained)
-                on_disk.save(keeper.path, score=score, score_episode=on_disk.episodes_trained)
-                keeper.score, keeper.episode = score, on_disk.episodes_trained
+            if on_disk.score is None or on_disk.score_block != self.eval_block:
+                why = "has no score" if on_disk.score is None else f"was scored on a {on_disk.score_block}-episode block"
+                self.say(f"best brain {keeper.path} {why}: evaluating it on {self.eval_block}")
+                episode = on_disk.episodes_trained
+                score, results = self._score_other(on_disk, episode)
+                on_disk.save(keeper.path, score=score, score_episode=episode, score_block=self.eval_block)
+                keeper.score, keeper.episode = score, episode
+                self._log_block(results, score, None, "incumbent")
             else:
                 keeper.score, keeper.episode = on_disk.score, on_disk.score_episode
             self.say(f"best brain {keeper.path}: {keeper.describe()}")
@@ -396,7 +453,8 @@ class Trainer:
             return
 
         mine = self.mushroom
-        if mine.score is not None:
+        results: list[EpisodeResult] = []
+        if mine.score is not None and mine.score_block == self.eval_block:
             score, episode = mine.score, mine.score_episode
         elif (
             on_disk is not None
@@ -404,20 +462,16 @@ class Trainer:
             and np.array_equal(on_disk.w_critic, mine.w_critic)
         ):
             self.say("resumed brain is the best brain's weights: it shares that score")
-            score, episode = keeper.score, keeper.episode
+            return
         else:
             self.say("resumed brain has no score: evaluating it before training")
-            score, episode = self.block(mine.episodes_trained), mine.episodes_trained
-        if keeper.offer(mine, score, episode):
-            self.say(f"resumed brain is the best so far ({score:.1f}): written to {keeper.path}")
+            episode = mine.episodes_trained
+            score, results = self.block(episode)
+        self._offer(results, score, episode, "resumed brain")
 
     def _evaluate_and_keep(self, episode: int) -> None:
-        score = self.block(episode)
-        improved = self.best.offer(self.mushroom, score, episode)
-        self.say(
-            f"block after episode {episode}: score {score:.1f}; {self.best.describe()}"
-            + (f"  <- new best, written to {self.best.path}" if improved else "")
-        )
+        score, results = self.block(episode)
+        self._offer(results, score, episode, f"block after episode {episode}")
 
     def run(self, total_ticks: int, *, resumed: bool = False) -> list[EpisodeResult]:
         """Train for `total_ticks` training ticks (blocks are not counted).
@@ -438,7 +492,7 @@ class Trainer:
                 budget = min(self.episode_ticks, total_ticks - self.spent)
                 result = self.train_episode(episode, budget, cfg.seed + 1000 * episode)
                 # Whatever score these weights had is stale now.
-                self.mushroom.score = self.mushroom.score_episode = None
+                self.mushroom.score = self.mushroom.score_episode = self.mushroom.score_block = None
                 self.spent += result.ticks
                 self._record(result)
                 if self.best is not None and episode % self.eval_every == 0:

@@ -174,7 +174,9 @@ class LoopOptions:
 
     brain_path: Path | None = None  # a saved mushroom body to load
     learn: bool = False  # keep learning while watching
-    save_brain: bool = False  # write the brain back on exit
+    save_brain: bool = False  # write the learned brain on exit, to `save_path`
+    save_path: Path | None = None  # where `save_brain` writes. run.py never lets
+    # this be the best brain (see `run.brain_save_target`).
     pace_hz: float = 0.0  # >0: sleep so the loop runs at this many ticks a
     # second. PyBoy's null window does not limit speed,
     # so watching a headless run needs this.
@@ -295,8 +297,9 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
     finally:
         elapsed = time.perf_counter() - started - paused_for
         fly.motor.release_all()
-        if options.save_brain and options.brain_path is not None:
-            fly.mushroom.save(options.brain_path)
+        if options.save_brain and options.save_path is not None:
+            fly.mushroom.save(options.save_path)
+            print(f"brain saved to {options.save_path}", flush=True)
         if cfg.save_state is not None:
             emulator.save_state(cfg.save_state)
         emulator.close()

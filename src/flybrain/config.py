@@ -319,9 +319,15 @@ class Config:
     train_ticks: int = 2_000_000  # total tick budget for `train.py`
     episode_ticks: int = 20_000  # ticks per episode
     eval_every: int = 10  # training episodes between evaluation blocks
-    eval_block: int = 3  # learning-off episodes per evaluation block. The block
-    # score is their mean reward, and the best brain is
-    # replaced only when a block beats the best score so far.
+    eval_block: int = 6  # learning-off episodes per evaluation block; the block
+    # score is their mean reward. Measured: one block
+    # episode's reward has sd 58.5, so a 3-episode mean is
+    # uncertain by ~34 and picking the maximum of 16 such
+    # scores kept a brain worse on the held-out seeds than
+    # the one it started from. 6 halves the variance.
+    best_margin: float = 25.0  # a block replaces the best brain only when its score
+    # beats the incumbent's by at least this much. About one
+    # standard error of a 6-episode block (58.5 / sqrt(6)).
     eval_block_seed: int = 8_000_000  # block episode i uses seed + this + i, the
     # SAME seeds every block, so scores are comparable across
     # blocks. Clear of the training seeds (seed + 1000 * ep)
