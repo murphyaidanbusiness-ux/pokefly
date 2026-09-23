@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import webbrowser
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from flybrain.hud import Hud, PlainLog  # noqa: E402
 from flybrain.loop import LoopOptions, run_loop  # noqa: E402
 
 
-def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions]:
+def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argparse.Namespace]:
     parser = argparse.ArgumentParser(description="A simulated fly brain plays Pokemon Red.")
     parser.add_argument("--rom", type=Path, default=ROOT / "roms" / "pokemon_red.gb")
     parser.add_argument("--neurons", type=int, default=2000, help="1000 to 5000")
@@ -40,11 +41,18 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions]:
     parser.add_argument(
         "--start-state", action="store_true", help="start from states/bedroom.state instead of a cold boot"
     )
+    parser.add_argument("--couch", action="store_true", help="open the live 3D couch scene in a browser")
+    parser.add_argument("--couch-port", type=int, default=Config().couch_port, help="port for the scene server")
+    parser.add_argument("--no-browser", action="store_true", help="with --couch, do not open a browser tab")
+    parser.add_argument("--window", action="store_true", help="with --couch, keep the SDL2 window open too")
     args = parser.parse_args(argv)
 
     load_state = args.load_state
     if args.start_state and load_state is None:
         load_state = ROOT / "states" / "bedroom.state"
+
+    # The scene IS the window, so --couch is headless unless you ask for both.
+    headless = args.headless or (args.couch and not args.window)
 
     cfg = replace(
         Config(),
@@ -52,12 +60,13 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions]:
         n_neurons=args.neurons,
         seed=args.seed,
         uncapped=args.uncapped,
-        headless=args.headless,
+        headless=headless,
         hud=not args.no_hud,
         max_steps=args.max_steps,
         connectome_csv=args.connectome,
         load_state=load_state,
         save_state=args.save_state,
+        couch_port=args.couch_port,
     )
 
     if args.naive:
@@ -69,14 +78,44 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions]:
     else:
         default = ROOT / "brains" / "latest.npz"
         brain_path = default if default.is_file() else None
-    options = LoopOptions(brain_path=brain_path, learn=args.learn, save_brain=args.save_brain)
-    return cfg, options
+    # PyBoy's null window runs as fast as the CPU allows (measured here: about
+    # 1,400 ticks/s), so a watched headless run has to pace itself.
+    pace = cfg.couch_pace_hz if (args.couch and not args.uncapped) else 0.0
+    options = LoopOptions(
+        brain_path=brain_path, learn=args.learn, save_brain=args.save_brain, pace_hz=pace
+    )
+    return cfg, options, args
+
+
+def run_with_couch(cfg: Config, options: LoopOptions, args: argparse.Namespace, display: object) -> None:
+    """The same loop, with the scene server and its observer around it."""
+    from flybrain.couch import CouchServer
+    from flybrain.couch_observer import CouchObserver
+
+    server = CouchServer(cfg, port=args.couch_port).start()
+    watcher = CouchObserver(cfg, server.hub)
+    print(f"couch: {server.url}   scene files from {server.root}", flush=True)
+    print("couch: Ctrl+C stops the run and releases the port.", flush=True)
+    if not args.no_browser:
+        webbrowser.open(server.url)
+    try:
+        run_loop(cfg, observers=(display, watcher), options=options)
+    finally:
+        server.stop()
+        print(
+            f"couch: {watcher.states_sent} state and {watcher.videos_sent} video messages published, "
+            f"{server.hub.messages_sent} written to browsers, {server.hub.clients_dropped} clients dropped",
+            flush=True,
+        )
 
 
 def main() -> None:
-    cfg, options = parse_args()
+    cfg, options, args = parse_args()
     display = Hud(cfg) if cfg.hud else PlainLog(cfg)
-    run_loop(cfg, observers=(display,), options=options)
+    if args.couch:
+        run_with_couch(cfg, options, args, display)
+    else:
+        run_loop(cfg, observers=(display,), options=options)
 
 
 if __name__ == "__main__":

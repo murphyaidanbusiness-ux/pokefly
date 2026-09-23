@@ -203,6 +203,31 @@ class Config:
     panic_pulse: float = 0.22  # transient current added to every sensory channel
     # on the panic tick, so the startle shows on the HUD
 
+    # ---- couch scene ----------------------------------------------------
+    # `run.py --couch`: a stdlib HTTP + WebSocket server on loopback feeding a
+    # three.js scene in the browser. Nothing here is on the path of a run
+    # without --couch.
+    couch_host: str = "127.0.0.1"  # loopback only, never 0.0.0.0: this serves a
+    # live video feed of whatever is on the screen
+    couch_port: int = 8765
+    couch_state_hz: float = 45.0  # JSON state messages per second. The scene
+    # interpolates between them, so more than about
+    # 60 buys nothing and costs a json.dumps a tick.
+    couch_video_fps: float = 30.0  # binary frames per second. Each one is 23 KB,
+    # so 30 is 0.7 MB/s over loopback.
+    couch_send_timeout: float = 2.0  # seconds a client gets to accept one message
+    # before it is dropped. A tab that has been
+    # backgrounded to death must not slow the game.
+    couch_wait: float = 0.25  # how long a client thread blocks waiting for a new
+    # message before looking at the stop flag again
+    couch_spike_sample: int = 256  # neurons in the raster. 256 packs to 32 bytes.
+    couch_spike_per_pool: int = 8  # of those, how many come from each motor pool
+    couch_event_limit: int = 96  # press events buffered between two state
+    # messages, so a wedged sender cannot grow a list
+    couch_pace_hz: float = 60.0  # PyBoy's null window does not limit speed, so the
+    # loop paces itself here. Measured without it:
+    # about 1,400 ticks/s headless, 23x too fast to watch.
+
     # ---- hud ------------------------------------------------------------
     hud_every: int = 6  # ticks between HUD redraws
     hud_history: int = 8  # actions kept in the "last actions" strip

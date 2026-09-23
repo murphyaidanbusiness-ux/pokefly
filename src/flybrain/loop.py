@@ -175,6 +175,9 @@ class LoopOptions:
     brain_path: Path | None = None  # a saved mushroom body to load
     learn: bool = False  # keep learning while watching
     save_brain: bool = False  # write the brain back on exit
+    pace_hz: float = 0.0  # >0: sleep so the loop runs at this many ticks a
+    # second. PyBoy's null window does not limit speed,
+    # so watching a headless run needs this.
 
 
 def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions | None = None) -> dict:
@@ -206,13 +209,22 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
         # say so has a `title` too; anything that does not is left alone.
         if hasattr(watcher, "title"):
             watcher.title = loaded
+        # An observer that needs more than one tick's worth of state asks for
+        # the fly itself. The couch scene's spike raster is the only one so
+        # far: putting 2000 spike bits on every TickState would cost every
+        # other observer something for nothing.
+        attach = getattr(watcher, "attach", None)
+        if attach is not None:
+            attach(fly)
     if cfg.load_state is not None:
         emulator.load_state(cfg.load_state)
         fly.optic.reset()
 
     step = 0
     map_order: list[int] = []
+    period = 1.0 / options.pace_hz if options.pace_hz > 0 else 0.0
     started = time.perf_counter()
+    deadline = started + period
     try:
         while cfg.max_steps == 0 or step < cfg.max_steps:
             if not emulator.tick():
@@ -223,6 +235,8 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
                 map_order.append(state.map_id)
             for watcher in watchers:
                 watcher(state)
+            if period:
+                deadline = _pace(deadline, period)
     except KeyboardInterrupt:
         pass
     finally:
@@ -258,6 +272,19 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
     }
     _print_summary(summary, motor, map_order)
     return summary
+
+
+def _pace(deadline: float, period: float) -> float:
+    """Sleep until `deadline`, then return the next one.
+
+    A tick that ran long does not get made up for by a burst of fast ones: the
+    next deadline starts from now, so the game slows down rather than stutters.
+    """
+    now = time.perf_counter()
+    if now < deadline:
+        time.sleep(deadline - now)
+        return deadline + period
+    return now + period
 
 
 def _print_summary(summary: dict, motor: MotorBridge, map_order: list[int]) -> None:

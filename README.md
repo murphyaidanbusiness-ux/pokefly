@@ -68,6 +68,40 @@ Ctrl+C exits cleanly: buttons released, emulator closed, cursor restored.
 
 There is no install step. `run.py` puts `src/` on `sys.path` itself.
 
+## Watch it on the couch
+
+```powershell
+& .\.venv\Scripts\python.exe run.py --couch --start-state
+```
+
+A browser tab opens on `http://127.0.0.1:8765/` with a small 3D living room:
+the fly sits on a couch holding a controller and the CRT in front of it shows
+the live game. The emulator runs headless at 60 Hz (add `--window` to keep the
+SDL2 window too); the terminal HUD stays. Every other flag works with it
+(`--brain`, `--naive`, `--learn`, `--uncapped`). `--couch-port N` moves the
+server, `--no-browser` skips opening the tab. Ctrl+C stops the run and frees
+the port.
+
+| what you see | what it means |
+|---|---|
+| a control on the pad goes down and the front leg pokes it | that button is being pressed right now; the d-pad tilts the way the fly is walking |
+| the glow inside the head | the share of neurons firing; brighter is busier |
+| the glow flashes gold, antennae perk up | dopamine: something went better than expected (a new tile, a new room) |
+| the glow goes cold blue, antennae droop | worse than expected |
+| wings buzz, the fly hops, the camera shakes | the panic reflex (stuck for 200 ticks) |
+| the front legs rub together | START fired (a grooming bout) |
+| the fly leans in | a battle |
+| the box by the couch | a live spike raster: seven coloured rows are the motor pools, the band below is 200 other neurons; the bars on top are the seven learned biases |
+| the room brightens and dims | the TV is the key light and follows the game picture |
+
+Keys: `1` living room, `2` the TV, `3` the fly, `4` the brain monitor, drag to
+orbit, wheel to zoom, right-drag to pan, `R` reset, `G` Game Boy green or
+plain gray, `H` hide the panel. The scene is plain ES modules on a vendored
+copy of three.js (`scene/vendor/`, MIT), served by a stdlib HTTP server with a
+hand-written WebSocket (`src/flybrain/couch.py`); there is no build step and no
+new Python dependency. `scene/PROTOCOL.md` documents the messages,
+`scene/REVIEW.md` is the visual checklist.
+
 ## Train
 
 ```powershell
