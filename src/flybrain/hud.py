@@ -52,6 +52,7 @@ class Hud:
         self._rate = 0.0
         self.milestone_lines: deque[str] = deque(maxlen=3)
         self.status = None  # run.py: a callable returning the journey status
+        self._closed = False
         os.system("")  # enables VT processing on a Windows console
         sys.stdout.write(_HIDE_CURSOR + "\x1b[2J")
         sys.stdout.flush()
@@ -105,6 +106,12 @@ class Hud:
         sys.stdout.flush()
 
     def close(self) -> None:
+        """Give the cursor back. Safe to call twice: the loop closes its
+        observers on the way out, and `run.py` closes the display again in
+        case the run never reached the loop."""
+        if self._closed:
+            return
+        self._closed = True
         sys.stdout.write(_SHOW_CURSOR + "\n")
         sys.stdout.flush()
 

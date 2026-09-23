@@ -30,9 +30,9 @@ sys.path.insert(0, str(ROOT / "src"))
 from flybrain.config import Config  # noqa: E402
 from flybrain.hud import Hud, PlainLog  # noqa: E402
 from flybrain.journey import JourneySave, JourneySession  # noqa: E402
-from flybrain.loop import LoopOptions, run_loop  # noqa: E402
+from flybrain.loop import MISSING_ROM_EXIT, LoopOptions, require_rom, run_loop  # noqa: E402
 from flybrain.milestones import LABELS, JourneyLog, MilestoneRecorder, game_time  # noqa: E402
-from flybrain.snapshot import FlySnapshot  # noqa: E402
+from flybrain.snapshot import FlySnapshot, SnapshotMismatch  # noqa: E402
 
 BEST_BRAIN = ROOT / "brains" / "latest.npz"
 JOURNEY_BRAIN = ROOT / "brains" / "journey.npz"
@@ -49,6 +49,27 @@ def brain_save_target(brain: Path | None, best: Path = BEST_BRAIN, journey: Path
     if brain is None or Path(brain).resolve() == Path(best).resolve():
         return Path(journey)
     return Path(brain)
+
+
+def require_start_state(path: str | Path) -> Path:
+    """The savestate a run wants to start from, or a plain message and exit 2.
+
+    `states/` is gitignored, so a fresh clone has no `states/bedroom.state`
+    until `train.py --make-start-state` (or a first `train.py`) has made one.
+    Without this the emulator window would open and then a FileNotFoundError
+    traceback would land on top of it.
+    """
+    state = Path(path)
+    if state.is_file():
+        return state
+    print(f"savestate not found: {state.resolve()}", file=sys.stderr)
+    if state.resolve() == BEDROOM.resolve():
+        print(
+            "Make it first with `python train.py --make-start-state` (the naive fly plays from a cold boot "
+            "until it is standing in Red's bedroom, about ten seconds), then run again.",
+            file=sys.stderr,
+        )
+    raise SystemExit(MISSING_ROM_EXIT)
 
 
 def journey_off_because(args: argparse.Namespace) -> str | None:
@@ -323,6 +344,11 @@ def run_with_couch(cfg: Config, options: LoopOptions, args: argparse.Namespace, 
 
 def main() -> None:
     cfg, options, args = parse_args()
+    # Everything a run needs from disk is checked here, before a journey
+    # folder is made, a brain copied or the HUD has cleared the screen.
+    require_rom(cfg)
+    if cfg.load_state is not None:
+        require_start_state(cfg.load_state)
     extras = None
     replay_target = None
     observers: list = []
@@ -337,6 +363,8 @@ def main() -> None:
             store = JourneySave(JOURNEY_DIR)
             if args.fresh and not confirm_fresh(store, args.yes):
                 raise SystemExit(2)
+            if not store.exists():
+                require_start_state(BEDROOM)
             cfg = set_up_journey(cfg, options, args, store)
             session = JourneySession(store, cfg)
             options.journey = session
@@ -348,10 +376,24 @@ def main() -> None:
     if extras is not None and hasattr(display, "status"):
         display.status = extras
     observers.insert(0, display)
-    if args.couch:
-        run_with_couch(cfg, options, args, observers, extras=extras, replay_target=replay_target)
-    else:
-        run_loop(cfg, observers=tuple(observers), options=options)
+    try:
+        if args.couch:
+            run_with_couch(cfg, options, args, observers, extras=extras, replay_target=replay_target)
+        else:
+            run_loop(cfg, observers=tuple(observers), options=options)
+    except SnapshotMismatch as error:
+        # A journey save or a replay from a fly built with other numbers: say
+        # so in one line rather than a traceback under a half-drawn HUD.
+        display.close()
+        print(f"cannot continue: {error}", file=sys.stderr)
+        if args.journey:
+            print("A changed tuning value needs a new journey: run again with --fresh.", file=sys.stderr)
+        raise SystemExit(2) from None
+    finally:
+        # The loop closes its observers on the way out of a run; when it
+        # never got that far (PyBoy refused the ROM, a state failed to load)
+        # the HUD still has to give the cursor back.
+        display.close()
 
 
 if __name__ == "__main__":

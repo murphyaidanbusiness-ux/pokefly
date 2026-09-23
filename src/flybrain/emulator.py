@@ -23,6 +23,19 @@ Button events are queued by PyBoy and only reach the joypad on the next
 `tick`, and that queue (`PyBoy.events`) is not in a savestate. So a point
 also carries the events issued since the last tick, and a restore clears the
 queue and issues them again.
+
+One more thing is not in a savestate: the renderer's window line counter
+(`Renderer.ly_window` in PyBoy's `core/lcd.py`). It is 0 in a PyBoy that has
+never rendered a frame and -1 at every frame boundary in one that has, so the
+first frame after a state is loaded into a FRESH PyBoy draws the window layer
+one line lower than the emulator that wrote the state would have, whenever the
+window is on screen (a text box, a menu). One frame, but the fly reads that
+frame, and from there it does something slightly different from the run the
+state came from. Measured on PyBoy's own bundled ROM: 150 pixels in 13 rows
+for one frame, then the presses parted company 71 ticks later. Every load
+here therefore goes through `_load`, which renders one throwaway frame
+between two loads of the same state, so a fresh emulator and a running one
+are left in the same state, counter included.
 """
 
 from __future__ import annotations
@@ -174,10 +187,28 @@ class Emulator:
         self.load_bytes(Path(path).read_bytes())
 
     def load_bytes(self, data: bytes) -> None:
-        self.pyboy.load_state(io.BytesIO(data))
+        self._load(data)
         self._anchor = bytes(data)
         self._events = []
         self._since_anchor = 0
+
+    def _load(self, data: bytes) -> None:
+        """Load a savestate so that a fresh emulator and a running one agree.
+
+        PyBoy's savestate leaves out the renderer's window line counter (see
+        the module docstring), which only a rendered frame resets. So: load,
+        render one frame and throw it away, load again. The second load puts
+        the emulation back exactly where the state says; the counter is now
+        what a running emulator has at a frame boundary. A tick consumes
+        PyBoy's queue of button events, so whatever the caller had queued is
+        put back afterwards, untouched.
+        """
+        queued = list(self.pyboy.events)
+        self.pyboy.load_state(io.BytesIO(data))
+        self.pyboy.tick(1, True)
+        self.pyboy.load_state(io.BytesIO(data))
+        self.pyboy.events.clear()
+        self.pyboy.events.extend(queued)
 
     def state_bytes(self) -> bytes:
         """A full savestate, now. About 20 ms: see the module docstring."""
@@ -226,7 +257,7 @@ class Emulator:
         because the screen buffer is part of the state."""
         self.pyboy.events.clear()  # anything queued belongs to the old timeline
         self._pending = []
-        self.pyboy.load_state(io.BytesIO(point.anchor))
+        self._load(point.anchor)
         logged = iter(point.events)
         upcoming = next(logged, None)
         for tick in range(1, point.ticks + 1):

@@ -41,7 +41,7 @@ which point it carries the spike-sample labels.
 ```json
 {
   "type": "hello",
-  "protocol": 1,
+  "protocol": 2,
   "pools": ["UP","DOWN","LEFT","RIGHT","A","B","START"],
   "thresholds": [6.4, 6.4, 6.4, 6.4, 6.4, 8.0, 14.08],
   "reward_parts": ["tile","map","event","level","badge"],

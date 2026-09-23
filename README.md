@@ -34,6 +34,20 @@ The ROM is yours to supply. Put your own Pokemon Red dump at `roms/pokemon_red.g
 (1 MB, `.gb`). `roms/` is gitignored and nothing in this project downloads a ROM.
 If the file is missing, `run.py` prints the exact path it wanted and exits 2.
 
+Two more files are made locally and never committed. `states/bedroom.state`,
+the savestate every episode and every journey starts from, is made by
+
+```powershell
+& .\.venv\Scripts\python.exe train.py --make-start-state
+```
+
+(the untrained fly plays from a cold boot until it is standing in Red's
+bedroom; about ten seconds). `run.py` says so and exits 2 when it needs the
+state and it is not there. `brains/latest.npz`, the trained brain, is not in
+the repository either: without it `run.py` plays the untrained fly and says
+`brain: none`, and `train.py` makes one (the 2,000,000-tick run below took 44
+minutes here).
+
 ## Run
 
 ```powershell
@@ -235,6 +249,18 @@ identical presses, positions and value estimates, and so does
 snapshot-run-restore-run in one process. PyBoy's queue of button events that
 have not reached the joypad yet is not in a savestate, so a snapshot carries
 those too and a restore re-issues them.
+
+Nor is the renderer's window line counter (`Renderer.ly_window` in PyBoy's
+`core/lcd.py`), and that one bit: a PyBoy that has never drawn a frame holds
+0 where a running one holds -1 at every frame boundary, so the first frame
+after a state is loaded into a fresh emulator draws the window layer (a text
+box, a menu) one line lower than the emulator that wrote the state did. One
+frame, but the fly reads it, and a fly restored from a journey save was
+pressing a different button 71 ticks later. Every load in `emulator.py` now
+renders one throwaway frame between two loads of the same state, which leaves
+a fresh emulator and a running one identical, counter included.
+`tests/test_emulator.py` checks it on the small ROM PyBoy ships for its own
+demo, so it runs without Pokemon Red.
 
 The 60,000-tick run from the bedroom with `brains/latest.npz`
 (`run.py --start-state --headless --uncapped --no-hud --max-steps 60000`, 50 s):
@@ -966,9 +992,11 @@ are the reasons, not excuses:
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-224 tests, all headless, about a minute. They pass with no ROM present; the
+232 tests, all headless, about a minute. They pass with no ROM present; the
 handful that need one skip when `roms/pokemon_red.gb` is absent, and the short
-training test also needs `states/bedroom.state`.
+training test also needs `states/bedroom.state`. `tests/test_emulator.py` and
+`tests/test_run.py` run the real emulator on the ROM PyBoy ships for its own
+demo, so a fresh clone with no Pokemon ROM still exercises PyBoy end to end.
 
 Two of them carry most of the weight.
 
