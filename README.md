@@ -44,7 +44,8 @@ If the file is missing, `run.py` prints the exact path it wanted and exits 2.
 ```
 
 `run.py` loads `brains/latest.npz` when that file exists and prints one line
-saying which brain it loaded and how long it trained. `--naive` ignores it.
+saying which brain it loaded, how long it trained, and the evaluation-block
+score it was kept for and the episode that score came from. `--naive` ignores it.
 
 | flag | what it does |
 |---|---|
@@ -62,7 +63,7 @@ saying which brain it loaded and how long it trained. `--naive` ignores it.
 | `--brain PATH` | load this mushroom body instead of `brains/latest.npz` |
 | `--naive` | ignore any saved brain: the untrained fly |
 | `--learn` | keep learning while you watch |
-| `--save-brain` | with `--learn`, write the brain back on exit |
+| `--save-brain` | with `--learn`, write the brain back on exit. By default that is `brains/latest.npz`, so it replaces the best brain and drops its score; pass `--brain` a copy to keep the best |
 
 `P` or `Space` in the terminal pauses: the buttons come up, the game and the
 brain stand still, and the same key resumes. Ctrl+C exits cleanly: buttons
@@ -107,8 +108,8 @@ new Python dependency. `scene/PROTOCOL.md` documents the messages,
 ## Train
 
 ```powershell
-& .\.venv\Scripts\python.exe train.py                        # 2,000,000 ticks, 100 episodes
-& .\.venv\Scripts\python.exe train.py --ticks 5000000 --resume
+& .\.venv\Scripts\python.exe train.py                        # 2,000,000 training ticks from scratch
+& .\.venv\Scripts\python.exe train.py --ticks 3000000 --resume --log runs\train-more.csv
 & .\.venv\Scripts\python.exe train.py --evaluate-naive       # the 10-episode baseline
 & .\.venv\Scripts\python.exe train.py --evaluate brains\latest.npz
 ```
@@ -119,21 +120,70 @@ by running the **untrained** fly from a cold boot until it is standing in the
 bedroom and has moved twice. Nothing about that is scripted; it took 5,039
 ticks here. `--make-start-state` does only that and stops.
 
+**Two files.** Training keeps them apart on purpose:
+
+| file | what it is | who reads it |
+|---|---|---|
+| `brains/training.npz` (`--out`) | the training state: always the latest weights, checkpointed every 10 episodes and on Ctrl+C | `train.py --resume` |
+| `brains/latest.npz` (`--best`) | the best brain so far by evaluation-block score, with that score and the episode it came from written inside | `run.py`, which prints both |
+
+Every `--eval-every` training episodes (10) the current weights play an
+**evaluation block**: `--eval-block` episodes (3) with learning off, on the same
+fixed seeds every time (`seed + 8,000,000 + i`, clear of the training seeds and
+of the held-out 90000-90009 set), scored by mean reward. The weights are copied
+to the best file only when a block beats every score before it; a tie keeps the
+older brain. The weights a run ends on get a block too. Before any training the
+best file is scored if it has no score yet (a brain from before this existed),
+and a resumed brain with no score is scored as well, so the best file never
+holds a brain with a lower BLOCK score than the one you started from. That is
+a statement about three fixed seeds, not about the fly: see "Continued
+training" under The experiment, where it picked a brain that is worse on the
+held-out seeds. Both files are
+written to a temporary name and renamed into place, so a Ctrl+C at any moment
+leaves each one whole; at worst the best file is behind the training state.
+
+**The learning-rate schedule.** Both readouts run at
+`lr = lr0 / (1 + episodes_trained / 100)` (`lr_decay_episodes` in `config.py`,
+0 turns it off). The count is the brain's own and is saved with it, so a resume
+continues the schedule rather than restarting it: the 100-episode brain resumes
+at half rate, and at 300 episodes it is a quarter. Every CSV row logs the rate
+the episode actually ran at (0 for a learning-off one).
+
+**Continuing training:** copy the brain you want to continue from to the
+training state, then resume. The best file only ever improves its block score.
+With a 3-episode block that is not yet the same as improving the fly (the
+measured block noise is about 34 reward points, larger than the differences it
+was choosing between), so check a new best on the held-out seeds with
+`--evaluate` before you trust it, and keep a copy of the brain it replaced.
+
+```powershell
+Copy-Item brains\latest.npz brains\training.npz     # or keep the training.npz you have
+& .\.venv\Scripts\python.exe train.py --resume --ticks 3000000 --log runs\train-more.csv
+```
+
+`--resume` refuses to start when there is no training state, rather than
+silently training a fresh fly. A CSV log written by an older `train.py` has
+different columns and is refused too: pass a new `--log`. Training from
+scratch with the default `--best` competes against whatever brain is already
+in `brains/latest.npz`; pass `--best` a new path for a clean experiment.
+
 | flag | what it does |
 |---|---|
-| `--ticks N` | total tick budget (default 2,000,000) |
+| `--ticks N` | training tick budget, blocks not counted (default 2,000,000) |
 | `--episode-ticks N` | ticks per episode (default 20,000) |
 | `--seed N` | episode seeds derive from this |
-| `--out PATH` | where the brain is written (default `brains/latest.npz`) |
-| `--resume` | continue from the brain at `--out` |
-| `--eval-every K` | run a learning-off evaluation episode every K episodes |
-| `--log PATH` | one CSV row per episode (default `runs/train.csv`) |
+| `--out PATH` | the training state (default `brains/training.npz`) |
+| `--best PATH` | the best brain (default `brains/latest.npz`) |
+| `--resume` | continue from the training state at `--out` |
+| `--eval-every K` | an evaluation block every K training episodes; 0 means no blocks and no best file |
+| `--eval-block N` | learning-off episodes per block (default 3) |
+| `--log PATH` | one CSV row per episode, blocks included (default `runs/train.csv`) |
 | `--state PATH` | the start savestate |
 | `--make-start-state` | write the start savestate and stop |
-| `--evaluate PATH` / `--evaluate-naive` | skip training, run the evaluation block |
+| `--evaluate PATH` / `--evaluate-naive` | skip training, run the held-out evaluation (seeds 90000 up) |
+| `--eval-log PATH` | with `--evaluate`, one CSV row per episode |
 
-The brain is checkpointed every ten episodes and on Ctrl+C, so an interrupt
-never loses a run. `brains/`, `states/` and `runs/` are gitignored.
+`brains/`, `states/` and `runs/` are gitignored.
 
 ## How the brain is wired
 
@@ -506,6 +556,68 @@ LEFT 18.9% / RIGHT 20.3% in episodes 1-10 to UP 19.3% / DOWN 23.2% / LEFT 22.6%
 is what you would expect: the learned part is place-dependent, so it cancels out
 when you sum over a whole episode. The behaviour it produces does not.
 
+### Continued training: a schedule and best-keeping, 3,000,000 more ticks
+
+Run 2 resumed the 100-episode brain at the constant learning rate for 129 more
+episodes and wandered in and out of the policy (`runs/train2.csv`). Run 3
+resumed the same brain with the learning-rate schedule and best-keeping, 150
+training episodes of 20,000 ticks plus 16 evaluation blocks of three:
+
+```
+Copy-Item brains\v1-2M.npz brains\training.npz
+& .\.venv\Scripts\python.exe train.py --resume --ticks 3000000 --episode-ticks 20000 --log runs\train3.csv
+```
+
+3,960,000 ticks including the blocks in 59.9 minutes, 1,102 ticks/s overall.
+Training episodes by ten (weights and rate at each bucket's last episode):
+
+| episodes | run 2 share out | run 3 mean reward | run 3 share out | abs w_actor | abs w_critic | lr_actor |
+|---|---|---|---|---|---|---|
+| 101-110 | 1.00 | 183.5 | 1.00 | 0.02320 | 0.02800 | 9.57e-4 |
+| 111-120 | 0.80 | 168.8 | 1.00 | 0.02342 | 0.02845 | 9.13e-4 |
+| 121-130 | 0.70 | 138.0 | 0.80 | 0.02413 | 0.02976 | 8.73e-4 |
+| 131-140 | 0.40 | 172.1 | 1.00 | 0.02377 | 0.02992 | 8.37e-4 |
+| 141-150 | 0.00 | 158.6 | 1.00 | 0.02428 | 0.03086 | 8.03e-4 |
+| 151-160 | 0.00 | 163.8 | 0.90 | 0.02475 | 0.03265 | 7.72e-4 |
+| 161-170 | 0.80 | 164.4 | 1.00 | 0.02533 | 0.03438 | 7.43e-4 |
+| 171-180 | 0.40 | 155.0 | 0.70 | 0.02529 | 0.03456 | 7.17e-4 |
+| 181-190 | 0.50 | 156.2 | 0.80 | 0.02550 | 0.03459 | 6.92e-4 |
+| 191-200 | 0.60 | 110.8 | 0.60 | 0.02595 | 0.03612 | 6.69e-4 |
+| 201-210 | 0.40 | 142.5 | 0.80 | 0.02585 | 0.03855 | 6.47e-4 |
+| 211-220 | 0.30 | 169.6 | 0.70 | 0.02646 | 0.03976 | 6.27e-4 |
+| 221-230 | 0.00 (221-229) | 163.2 | 0.80 | 0.02642 | 0.04043 | 6.08e-4 |
+| 231-240 | | 202.8 | 1.00 | 0.02662 | 0.04013 | 5.90e-4 |
+| 241-250 | | 136.5 | 0.80 | 0.02668 | 0.03944 | 5.73e-4 |
+
+By twenty the lowest share is 0.70 (episodes 181-200); run 2's was 0.00. The
+training policy no longer collapses. `|w_critic|` still climbs, 0.028 to 0.040
+against run 2's 0.029 to 0.043, so the schedule slowed it rather than stopped
+it; no critic weight decay was added, because nothing here shows it would help.
+
+Block scores (mean reward over the same three seeds, learning off), by the
+training episode they followed: 206.7 (the resumed brain, episode 100), 205.7,
+152.7, 179.0, 200.0, 200.7, **213.7** (160, new best), 144.7, 153.7, 206.3,
+205.3, 146.7, 93.3, **227.7** (230, new best), 87.7, 125.3.
+
+Held-out, seeds 90000-90009, learning off, 20,000 ticks each:
+
+| brain | left the house | mean reward | mean tiles | Oak's Lab | Route 1 | episodes with an event flag |
+|---|---|---|---|---|---|---|
+| v1-2M (episode 100) | 10 of 10 | 179.5 | 161.8 | 3 | 0 | 4 |
+| best by block, episode 230 (`brains/latest.npz`) | **8 of 10** | **124.4** | 111.9 | 2 | 0 | 4 |
+| final training state, episode 250 | 10 of 10 | 168.5 | 148.2 | 5 | 0 | 3 |
+
+**The best-keeping failed the held-out test.** The brain it kept is worse than
+the one it started from, and the training state it rejected (block score 125.3)
+is better than the one it kept. The reason is in the numbers: one block
+episode's reward has a standard deviation of about 58, so a three-episode mean
+is uncertain by about 34, and the block scores it was choosing between differ
+by less than that. Keeping the maximum of sixteen noisy scores picks the
+luckiest block, not the best brain. The mechanism does what it says (the file
+only ever moves up in block score, and is never torn by an interrupt); what it
+measures is too small a sample. A longer block, or requiring a new best to beat
+the old one by a margin, is the obvious next step, and neither has been run.
+
 ## What v1 did, for comparison
 
 `run.py --headless --uncapped --no-hud --max-steps 3000` from a cold boot:
@@ -609,7 +721,7 @@ are the reasons, not excuses:
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-91 tests, all headless, about 80 seconds. They pass with no ROM present; the
+137 tests, all headless, about a minute. They pass with no ROM present; the
 handful that need one skip when `roms/pokemon_red.gb` is absent, and the short
 training test also needs `states/bedroom.state`.
 

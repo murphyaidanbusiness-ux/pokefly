@@ -25,10 +25,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--episode-ticks", type=int, default=Config.episode_ticks)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--neurons", type=int, default=2000)
-    parser.add_argument("--out", type=Path, default=ROOT / "brains" / "latest.npz")
-    parser.add_argument("--resume", action="store_true", help="continue from the brain at --out")
-    parser.add_argument("--eval-every", type=int, default=Config.eval_every, help="episodes between eval episodes")
+    parser.add_argument(
+        "--out", type=Path, default=ROOT / "brains" / "training.npz", help="the training state: always the latest weights"
+    )
+    parser.add_argument(
+        "--best", type=Path, default=ROOT / "brains" / "latest.npz", help="the best brain by block score; run.py loads it"
+    )
+    parser.add_argument("--resume", action="store_true", help="continue from the training state at --out")
+    parser.add_argument(
+        "--eval-every", type=int, default=Config.eval_every, help="training episodes between evaluation blocks (0: none)"
+    )
+    parser.add_argument("--eval-block", type=int, default=Config.eval_block, help="learning-off episodes per block")
     parser.add_argument("--log", type=Path, default=ROOT / "runs" / "train.csv")
+    parser.add_argument("--eval-log", type=Path, default=None, help="with --evaluate: one CSV row per episode")
     parser.add_argument("--state", type=Path, default=ROOT / "states" / "bedroom.state")
     parser.add_argument("--make-start-state", action="store_true", help="write the start savestate and stop")
     parser.add_argument("--evaluate", type=Path, default=None, help="skip training: evaluate this brain")
@@ -57,9 +66,13 @@ def main() -> None:
             state_path=args.state,
             base_seed=args.eval_seed,
             label=label,
+            log_path=args.eval_log,
         )
         left = sum(r.left_house for r in results)
-        print(f"{label}: reached Pallet Town in {left} of {len(results)} episodes", flush=True)
+        mean = sum(r.reward for r in results) / max(len(results), 1)
+        print(
+            f"{label}: reached Pallet Town in {left} of {len(results)} episodes, mean reward {mean:.1f}", flush=True
+        )
         return
 
     results = train(
@@ -67,16 +80,19 @@ def main() -> None:
         total_ticks=args.ticks,
         episode_ticks=args.episode_ticks,
         out=args.out,
+        best=args.best,
         log_path=args.log,
         state_path=args.state,
         resume=args.resume,
         eval_every=args.eval_every,
+        eval_block=args.eval_block,
     )
     print("\nlearning curve (training episodes only)", flush=True)
     for row in learning_curve(results):
         print(
             f"  {row['episodes']:>9s}  n={row['n']:<3d} mean reward {row['mean_reward']:8.1f}  "
-            f"mean tiles {row['mean_tiles']:6.1f}  left house {row['left_house']:.2f}",
+            f"mean tiles {row['mean_tiles']:6.1f}  left house {row['left_house']:.2f}  "
+            f"|w_a| {row['w_actor_abs']:.5f}  |w_c| {row['w_critic_abs']:.5f}  lr {row['lr_actor']:.2e}",
             flush=True,
         )
 

@@ -282,6 +282,17 @@ class Config:
     # TD error never settles.
     reward_scale: float = 1.0  # every reward part is divided by this before the TD
     # error, for keeping the critic in a sane range
+    lr_decay_episodes: float = 100.0  # learning-rate schedule, both readouts:
+    # lr = lr0 / (1 + episodes_trained / this). The count
+    # is the brain's own, saved with it, so a resumed run
+    # continues the schedule: at 100 episodes the rate is
+    # half, at 300 a quarter. Measured reason: at a
+    # constant rate, 129 more episodes from the 100-episode
+    # brain wandered in and out of the policy it had found
+    # (leave-house share 1.00 down to 0.00 and back, by
+    # 10-episode bucket), because one coin flip (did it
+    # get out the door) dominates each episode's reward.
+    # 0 switches the schedule off.
 
     # ---- reward ---------------------------------------------------------
     # Every address below was checked against the pret/pokered symbol file
@@ -307,9 +318,17 @@ class Config:
     # ---- training -------------------------------------------------------
     train_ticks: int = 2_000_000  # total tick budget for `train.py`
     episode_ticks: int = 20_000  # ticks per episode
-    eval_every: int = 10  # episodes between learning-off evaluation episodes
-    checkpoint_every: int = 10  # episodes between brain checkpoints
-    brain_path: Path = Path("brains/latest.npz")
+    eval_every: int = 10  # training episodes between evaluation blocks
+    eval_block: int = 3  # learning-off episodes per evaluation block. The block
+    # score is their mean reward, and the best brain is
+    # replaced only when a block beats the best score so far.
+    eval_block_seed: int = 8_000_000  # block episode i uses seed + this + i, the
+    # SAME seeds every block, so scores are comparable across
+    # blocks. Clear of the training seeds (seed + 1000 * ep)
+    # and the held-out 90000-90009 set.
+    checkpoint_every: int = 10  # episodes between training-state checkpoints
+    training_state_path: Path = Path("brains/training.npz")  # latest weights; `--resume` reads it
+    best_brain_path: Path = Path("brains/latest.npz")  # best block score; `run.py` loads it
     start_state_path: Path = Path("states/bedroom.state")
     train_log_path: Path = Path("runs/train.csv")
 

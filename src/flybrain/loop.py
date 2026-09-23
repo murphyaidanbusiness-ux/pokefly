@@ -238,6 +238,11 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
         loaded = (
             f"brain: {Path(options.brain_path).name} "
             f"({fly.mushroom.episodes_trained} episodes, {fly.mushroom.ticks_trained} ticks trained"
+            + (
+                f", best block score {fly.mushroom.score:.1f} from episode {fly.mushroom.score_episode}"
+                if fly.mushroom.score is not None
+                else ", no block score"
+            )
             + (", still learning)" if options.learn else ")")
         )
     else:

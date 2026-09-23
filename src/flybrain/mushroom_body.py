@@ -26,6 +26,7 @@ in the trace.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -74,6 +75,29 @@ class MushroomBody:
         # Training counters, saved with the weights.
         self.episodes_trained = 0
         self.ticks_trained = 0
+        # The evaluation-block score these exact weights earned, and the
+        # training episode they came from. Only a best-brain file carries
+        # them: any learning makes a score stale, so `save` writes one only
+        # when it is handed one.
+        self.score: float | None = None
+        self.score_episode: int | None = None
+
+    # -- schedule ----------------------------------------------------------
+
+    @property
+    def lr_scale(self) -> float:
+        """`1 / (1 + episodes_trained / lr_decay_episodes)`, from the brain's own
+        count, so a resumed brain picks the schedule up where it left off."""
+        decay = self.cfg.lr_decay_episodes
+        return 1.0 if decay <= 0 else 1.0 / (1.0 + self.episodes_trained / decay)
+
+    @property
+    def lr_actor(self) -> float:
+        return self.cfg.lr_actor * self.lr_scale
+
+    @property
+    def lr_critic(self) -> float:
+        return self.cfg.lr_critic * self.lr_scale
 
     # -- sensing -----------------------------------------------------------
 
@@ -124,9 +148,10 @@ class MushroomBody:
         self.dopamine = delta
         if self.learning and delta != 0.0:
             cfg = self.cfg
-            np.multiply(self.e_actor, cfg.lr_actor * delta, out=self._scratch)
+            scale = self.lr_scale
+            np.multiply(self.e_actor, cfg.lr_actor * scale * delta, out=self._scratch)
             np.add(self.w_actor, self._scratch, out=self.w_actor)
-            self.w_critic += (cfg.lr_critic * delta) * self.e_critic
+            self.w_critic += (cfg.lr_critic * scale * delta) * self.e_critic
             np.clip(self.w_actor, -cfg.w_actor_clip, cfg.w_actor_clip, out=self.w_actor)
             np.clip(self.w_critic, -cfg.w_critic_clip, cfg.w_critic_clip, out=self.w_critic)
         return delta
@@ -176,17 +201,32 @@ class MushroomBody:
             dtype=np.int64,
         )
 
-    def save(self, path: str | Path) -> Path:
+    def save(self, path: str | Path, *, score: float | None = None, score_episode: int | None = None) -> Path:
+        """Write the weights. `score` and `score_episode` go in only when given:
+        they describe these exact weights, so only the best-brain file has them.
+
+        Written to a temporary file and renamed over the target, so a Ctrl+C
+        or a crash mid-write leaves the previous file whole rather than half a
+        new one.
+        """
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            target,
-            fingerprint=self.fingerprint(),
-            w_actor=self.w_actor,
-            w_critic=self.w_critic,
-            episodes_trained=np.int64(self.episodes_trained),
-            ticks_trained=np.int64(self.ticks_trained),
-        )
+        extra = {}
+        if score is not None:
+            extra["score"] = np.float64(score)
+            extra["score_episode"] = np.int64(self.episodes_trained if score_episode is None else score_episode)
+        partial = target.with_name(target.name + ".partial")
+        with partial.open("wb") as handle:
+            np.savez(
+                handle,
+                fingerprint=self.fingerprint(),
+                w_actor=self.w_actor,
+                w_critic=self.w_critic,
+                episodes_trained=np.int64(self.episodes_trained),
+                ticks_trained=np.int64(self.ticks_trained),
+                **extra,
+            )
+        os.replace(partial, target)
         return target
 
     def load(self, path: str | Path) -> None:
@@ -203,6 +243,10 @@ class MushroomBody:
             self.w_critic = np.ascontiguousarray(data["w_critic"], dtype=np.float32)
             self.episodes_trained = int(data["episodes_trained"])
             self.ticks_trained = int(data["ticks_trained"])
+            # Brains written before best-keeping have no score: None, which
+            # is what makes training evaluate them before trusting them.
+            self.score = float(data["score"]) if "score" in data.files else None
+            self.score_episode = int(data["score_episode"]) if "score_episode" in data.files else None
         self.e_actor = np.zeros_like(self.w_actor)
         self.e_critic = np.zeros_like(self.w_critic)
         self._scratch = np.zeros_like(self.w_actor)
