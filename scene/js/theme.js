@@ -71,6 +71,15 @@ export const VIEWS = {
   4: { name: 'the brain monitor', eye: [2.05, 1.32, 2.05], look: [1.55, 0.86, 0.75] },
 };
 
+/** The portrait layout's middle camera: in front of the fly, a little to its
+ *  right and above, so the face, the head glow and the controller in its
+ *  front legs are all in shot. The fly sits at (0, 0.54, 1.42) facing the TV
+ *  (-z); its pad is at about (0, 0.64, 1.04). */
+export const PORTRAIT_FLY = { eye: [0.62, 1.12, 0.35], look: [0.0, 0.74, 1.3], fov: 34 };
+
+/** How much of the portrait frame the TV close-up takes, from the top. */
+export const PORTRAIT_TV_SHARE = 0.45;
+
 export const clamp = (value, low, high) => (value < low ? low : value > high ? high : value);
 
 /** Frame-rate independent approach, the same shape as three's MathUtils.damp. */

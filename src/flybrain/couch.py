@@ -4,7 +4,11 @@
 the browser two things: the files under `scene/` over plain HTTP, and a live
 feed over `/ws`.
 
-The feed is server to client only. There is one rule that shapes everything
+The feed is server to client, except for two words: a browser may send one
+text frame `{"cmd": "save"}` or `{"cmd": "pause"}` (the overlay's buttons).
+Those are parsed on the client's reader thread and dropped into a small
+bounded queue on the `Hub` that the loop drains between ticks; anything else a
+client sends is ignored. There is one rule that shapes everything
 here: **the game loop must never wait for a browser**. So the observer that
 runs inside the loop only ever writes into a "latest" slot on the `Hub` and
 notifies; one thread per connected client wakes up, copies whatever is newer
@@ -15,18 +19,21 @@ deadline, and is dropped. Nothing about that reaches the loop.
 The WebSocket half is small because it only needs the half of RFC 6455 a
 browser makes us implement: the `Sec-WebSocket-Accept` handshake, unmasked
 server-to-client text and binary frames with the 126 and 127 length forms, and
-enough of the client direction to answer a ping and notice a close.
+enough of the client direction to answer a ping, notice a close and read the
+two commands.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import select
 import socket
 import struct
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -34,8 +41,14 @@ from urllib.parse import unquote, urlsplit
 from .config import Config
 
 # Bump when the shape of a message changes. The scene refuses a version it does
-# not know rather than drawing nonsense.
-PROTOCOL_VERSION = 1
+# not know rather than drawing nonsense. 2: the journey fields, the `status`
+# message and the client commands.
+PROTOCOL_VERSION = 2
+
+# The only things a browser may ask for. Everything else is ignored.
+COMMANDS = frozenset({"save", "pause"})
+# Commands waiting for the loop. A browser hammering Save cannot grow this.
+COMMAND_QUEUE = 16
 
 WS_PATH = "/ws"
 
@@ -133,6 +146,21 @@ def read_client_frame(reader) -> tuple[int, bytes] | None:
     return opcode, payload
 
 
+def parse_command(payload: bytes) -> str | None:
+    """`{"cmd": "save"}` or `{"cmd": "pause"}` -> the word, anything else ->
+    None. Never raises: this runs on bytes a browser tab chose to send."""
+    if len(payload) > 256:
+        return None
+    try:
+        message = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(message, dict):
+        return None
+    command = message.get("cmd")
+    return command if isinstance(command, str) and command in COMMANDS else None
+
+
 def send_all(sock: socket.socket, data: bytes, timeout: float) -> None:
     """Write every byte or raise, with a deadline on the whole write.
 
@@ -178,6 +206,9 @@ class Hub:
         self._clients = 0
         self.messages_sent = 0  # frames written to a socket, summed over clients
         self.clients_dropped = 0
+        self._commands: deque[str] = deque(maxlen=COMMAND_QUEUE)
+        self.commands_received = 0
+        self.frames_ignored = 0  # client text frames that were not a command
 
     # -- the loop's side (never blocks on a socket) ------------------------
 
@@ -199,7 +230,26 @@ class Hub:
             held = self._slots.get(slot)
             return held[1] if held else None
 
+    def take_commands(self) -> list[str]:
+        """Every command a browser has sent since the last call, oldest
+        first. The loop's side: it never blocks for longer than a lock."""
+        with self._cond:
+            if not self._commands:
+                return []
+            taken = list(self._commands)
+            self._commands.clear()
+            return taken
+
     # -- a client thread's side --------------------------------------------
+
+    def push_command(self, command: str) -> None:
+        with self._cond:
+            self._commands.append(command)
+            self.commands_received += 1
+
+    def ignored(self) -> None:
+        with self._cond:
+            self.frames_ignored += 1
 
     def take(self, seen: dict[str, int], timeout: float) -> list[bytes] | None:
         """Everything newer than `seen`, oldest first. None once stopped.
@@ -383,8 +433,8 @@ class CouchServer:
         """Runs in the handler's own thread until the tab closes or we drop it.
 
         The socket is written from here and read from a small second thread,
-        because the only thing the client direction carries is a ping or a
-        close and neither should be able to stall the feed.
+        because the client direction carries only a ping, a close or one of
+        the two commands, and none of them should be able to stall the feed.
         """
         sock = handler.connection
         lock = threading.Lock()
@@ -432,8 +482,13 @@ class CouchServer:
                     break
                 if opcode == OP_PING:
                     send(encode_frame(payload[:125], OP_PONG))
-                # Everything else a client might send is ignored on purpose:
-                # this feed is one directional and nothing here takes input.
+                elif opcode == OP_TEXT:
+                    command = parse_command(payload)
+                    if command is None:
+                        self.hub.ignored()
+                    else:
+                        self.hub.push_command(command)
+                # Everything else a client might send is ignored on purpose.
         except (OSError, TimeoutError, ValueError):
             pass
         finally:

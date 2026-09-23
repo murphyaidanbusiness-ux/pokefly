@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>a fly on a couch</title>
 <style>
   :root { color-scheme: dark; }
@@ -36,6 +36,93 @@
   #overlay .keys b { color: #e9e3f2; font-weight: 600; }
   #o-note { color: #7f7791; font-size: 12px; }
 
+  /* ---- the journey: strip, flash, buttons ------------------------------ */
+
+  #strip {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6;
+    width: min(760px, calc(100vw - 28px)); box-sizing: border-box;
+    padding: 10px 16px 10px;
+    background: rgba(12, 10, 18, 0.72);
+    border: 1px solid rgba(235, 225, 255, 0.14);
+    border-radius: 12px;
+    backdrop-filter: blur(6px);
+    display: grid; grid-template-columns: 1.6fr 0.9fr 1fr; gap: 2px 16px; align-items: end;
+  }
+  #strip .k { color: #9d94ae; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+  #s-last { font-size: 20px; font-weight: 650; color: #ffe3a3; line-height: 1.15; }
+  #s-last-at, #s-brain { color: #b9b1c8; font-size: 12.5px; }
+  #s-since { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  #s-gen { font-size: 17px; font-weight: 600; }
+  #s-countdown {
+    grid-column: 1 / -1; margin-top: 6px; padding: 5px 10px; border-radius: 8px;
+    background: rgba(255, 196, 64, 0.16); color: #ffd36b; font-weight: 650; font-size: 18px;
+    text-align: center; font-variant-numeric: tabular-nums;
+  }
+  #s-bar {
+    grid-column: 1 / -1; margin-top: 8px; padding-top: 7px;
+    border-top: 1px solid rgba(235, 225, 255, 0.12);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+    color: #b9b1c8; font-size: 12.5px;
+  }
+  #s-bar .grow { flex: 1 1 auto; }
+  #s-feed[data-state="connected"] { color: #8fe3a6; }
+  #s-feed[data-state="connecting"] { color: #e8d08a; }
+  #s-feed[data-state="disconnected"] { color: #ff8b8b; }
+  #s-game, #s-saved { font-variant-numeric: tabular-nums; }
+  #strip button {
+    pointer-events: auto; cursor: pointer;
+    font: 600 13px/1 system-ui, "Segoe UI", sans-serif; color: #e9e3f2;
+    background: rgba(235, 225, 255, 0.10); border: 1px solid rgba(235, 225, 255, 0.28);
+    border-radius: 7px; padding: 6px 12px;
+  }
+  #strip button:hover { background: rgba(235, 225, 255, 0.2); }
+  #strip[data-paused="yes"] #b-pause { background: rgba(255, 196, 64, 0.25); border-color: #ffd36b; }
+
+  #flash {
+    position: fixed; left: 50%; top: 38%; transform: translate(-50%, -50%); z-index: 8;
+    pointer-events: none; text-align: center; white-space: nowrap;
+    padding: 18px 34px 16px; border-radius: 16px;
+    background: rgba(20, 14, 4, 0.72); border: 2px solid rgba(255, 205, 90, 0.85);
+    box-shadow: 0 0 40px rgba(255, 190, 60, 0.45);
+    opacity: 0;
+  }
+  #flash .k { color: #ffcf66; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; }
+  #f-name { font-size: 34px; font-weight: 750; color: #fff1cf; margin: 4px 0 2px; }
+  #f-time { font-size: 17px; color: #ffdf9a; font-variant-numeric: tabular-nums; }
+  /* 3 s in all: in fast, hold, out. The page hides it when the time is up. */
+  #flash.on { animation: milestone-flash 3s ease-out forwards; }
+  @keyframes milestone-flash {
+    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.86); }
+    8% { opacity: 1; transform: translate(-50%, -50%) scale(1.04); }
+    14% { transform: translate(-50%, -50%) scale(1); }
+    82% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* ---- portrait (?portrait=1): 9:16 for Reels ---------------------------- */
+  /* The canvas draws the TV close-up in the top 45 percent and the fly under
+     it (main.js); the strip is the band at the bottom, full width, and holds
+     the compact status bar. The corner panel is not shown. */
+  body.portrait #overlay { display: none; }
+  body.portrait #strip {
+    left: 0; right: 0; bottom: 0; transform: none; width: 100vw;
+    border-radius: 0; border-width: 1px 0 0 0;
+    padding: 1.3vh 4vw 1.2vh; gap: 0.2vh 3vw;
+    background: rgba(12, 10, 18, 0.94);
+  }
+  body.portrait #strip .k { font-size: 1.15vh; }
+  body.portrait #s-last { font-size: 2.3vh; }
+  body.portrait #s-last-at, body.portrait #s-brain { font-size: 1.25vh; }
+  body.portrait #s-since { font-size: 2.6vh; }
+  body.portrait #s-gen { font-size: 1.9vh; }
+  body.portrait #s-countdown { font-size: 2.0vh; margin-top: 0.6vh; }
+  body.portrait #s-bar { font-size: 1.25vh; margin-top: 0.8vh; padding-top: 0.7vh; }
+  body.portrait #strip button { font-size: 1.3vh; padding: 0.6vh 1.2vh; }
+  body.portrait #flash { top: 60%; max-width: 90vw; }
+  body.portrait #f-name { font-size: 3.3vh; }
+  body.portrait #f-time { font-size: 1.8vh; }
+  body.portrait #flash .k { font-size: 1.3vh; }
+
   #crash {
     position: fixed; inset: 0; z-index: 50; padding: 6vh 6vw;
     background: #180d10; color: #ffd9d9; overflow: auto;
@@ -67,8 +154,41 @@
   <div class="keys">
     <b>1</b> couch &nbsp; <b>2</b> TV &nbsp; <b>3</b> fly &nbsp; <b>4</b> brain monitor<br>
     <b>drag</b> turn &nbsp; <b>wheel</b> zoom &nbsp; <b>right drag</b> pan &nbsp; <b>R</b> reset<br>
-    <b>G</b> green or gray &nbsp; <b>H</b> hide this panel
+    <b>G</b> green or gray &nbsp; <b>H</b> hide this panel<br>
+    <b>P</b> or <b>Space</b> pause &nbsp; <b>S</b> save the journey
     <div id="o-note"></div>
+  </div>
+</div>
+
+<div id="flash" hidden>
+  <div class="k">milestone</div>
+  <div id="f-name"></div>
+  <div id="f-time"></div>
+</div>
+
+<div id="strip" data-paused="no">
+  <div>
+    <div class="k">last milestone</div>
+    <div id="s-last">nothing yet</div>
+    <div id="s-last-at">the journey so far</div>
+  </div>
+  <div>
+    <div class="k">since then</div>
+    <div id="s-since">+0:00</div>
+  </div>
+  <div>
+    <div class="k">brain</div>
+    <div id="s-gen">generation -</div>
+    <div id="s-brain"></div>
+  </div>
+  <div id="s-countdown" hidden></div>
+  <div id="s-bar">
+    <span id="s-feed" data-state="connecting">connecting</span>
+    <span>game time <span id="s-game">-</span></span>
+    <span id="s-where" class="grow"></span>
+    <span id="s-saved"></span>
+    <button id="b-save" type="button" hidden title="S: save the journey now">Save</button>
+    <button id="b-pause" type="button" title="P or Space: pause the game and the brain">Pause</button>
   </div>
 </div>
 

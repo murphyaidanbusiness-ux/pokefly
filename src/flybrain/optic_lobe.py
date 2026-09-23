@@ -73,6 +73,20 @@ class OpticLobe:
         """Forget the previous frame, so the next one is a first frame again."""
         self._prev = None
 
+    def get_state(self) -> dict:
+        """The previous retina, and the noise generator exactly where it is."""
+        return {
+            "prev": None if self._prev is None else self._prev.copy(),
+            "retina": self._retina.copy(),
+            "rng": self.rng.bit_generator.state,
+        }
+
+    def set_state(self, state: dict) -> None:
+        prev = state["prev"]
+        self._prev = None if prev is None else np.array(prev, dtype=np.float32)
+        self._retina = np.array(state["retina"], dtype=np.float32)
+        self.rng.bit_generator.state = state["rng"]
+
     def step(self, frame: np.ndarray) -> np.ndarray:
         """frame: (144,160) uint8 grayscale. Returns (512,) float32 currents."""
         small = cv2.resize(

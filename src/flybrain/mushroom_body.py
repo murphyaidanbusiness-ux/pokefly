@@ -193,6 +193,50 @@ class MushroomBody:
         self.active = np.zeros(0, dtype=np.int64)
         self.mbon = np.zeros(self.n_pools, dtype=np.float32)
 
+    # -- snapshots ---------------------------------------------------------
+
+    def get_state(self) -> dict:
+        """The weights AND the moment: traces, the active code, the last value
+        and whether a TD error is due. A replay of a run that was learning has
+        to learn exactly as it did, so the weights travel with the snapshot
+        rather than being reloaded from a brain file that has moved on."""
+        return {
+            "w_actor": self.w_actor.copy(),
+            "w_critic": self.w_critic.copy(),
+            "e_actor": self.e_actor.copy(),
+            "e_critic": self.e_critic.copy(),
+            "active": self.active.copy(),
+            "mbon": self.mbon.copy(),
+            "value": self.value,
+            "dopamine": self.dopamine,
+            "prev_value": self._prev_value,
+            "primed": self._primed,
+            "learning": self.learning,
+            "episodes_trained": self.episodes_trained,
+            "ticks_trained": self.ticks_trained,
+            "fingerprint": self.fingerprint().tolist(),
+        }
+
+    def set_state(self, state: dict) -> None:
+        if list(state["fingerprint"]) != self.fingerprint().tolist():
+            raise BrainFileMismatch(
+                f"a snapshot of mushroom body {list(state['fingerprint'])} cannot go into {self.fingerprint().tolist()}"
+            )
+        self.w_actor = np.array(state["w_actor"], dtype=np.float32)
+        self.w_critic = np.array(state["w_critic"], dtype=np.float32)
+        self.e_actor = np.array(state["e_actor"], dtype=np.float32)
+        self.e_critic = np.array(state["e_critic"], dtype=np.float32)
+        self._scratch = np.zeros_like(self.w_actor)
+        self.active = np.array(state["active"], dtype=np.int64)
+        self.mbon = np.array(state["mbon"], dtype=np.float32)
+        self.value = float(state["value"])
+        self.dopamine = float(state["dopamine"])
+        self._prev_value = float(state["prev_value"])
+        self._primed = bool(state["primed"])
+        self.learning = bool(state["learning"])
+        self.episodes_trained = int(state["episodes_trained"])
+        self.ticks_trained = int(state["ticks_trained"])
+
     # -- disk --------------------------------------------------------------
 
     def fingerprint(self) -> np.ndarray:

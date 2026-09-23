@@ -13,6 +13,8 @@ Presses are sent as EVENTS, not just as the set of buttons held. A press is
 four ticks long and a state message goes out every twenty or so milliseconds,
 so a press that starts and ends between two messages is invisible in the held
 set. The scene needs it: that press is the whole point of the animation.
+A milestone is latched the same way: it goes out on the next state message
+whenever it landed, and on exactly one.
 """
 
 from __future__ import annotations
@@ -22,11 +24,13 @@ import json
 import math
 import time
 from collections import deque
+from collections.abc import Callable
 
 import numpy as np
 
 from .config import POOL_NAMES, Config
 from .couch import OP_BINARY, OP_TEXT, PROTOCOL_VERSION, VIDEO_MESSAGE, Hub, encode_frame
+from .milestones import LABELS, game_time
 from .reward import PARTS
 
 FRAME_WIDTH, FRAME_HEIGHT = 160, 144
@@ -131,6 +135,14 @@ class CouchObserver:
         self.history: deque[str] = deque(maxlen=cfg.hud_history)
         self.sampler: SpikeSampler | None = None
         self.fly = None
+        # Set by run.py. `extras` returns fields to merge into every state
+        # and status message (the journey's "saved ... ago"); `replay_target`
+        # is (milestone name, game tick it lands at) during a replay, for the
+        # countdown.
+        self.extras: Callable[[], dict] | None = None
+        self.replay_target: tuple[str, int] | None = None
+        self.landed: list[dict] = []  # milestones not yet sent
+        self.last: dict | None = None  # the most recent milestone this run
 
         self._start = time.perf_counter()
         self._rate_step = 0
@@ -155,6 +167,21 @@ class CouchObserver:
 
     def close(self) -> None:
         """The server outlives the loop by a moment; `run.py` stops it."""
+
+    def on_pause(self, paused: bool) -> None:
+        """`run_loop` calls this when it pauses and resumes, and again after a
+        save made while paused. No tick runs while paused, so this is the only
+        way the page hears about it."""
+        payload = {"type": "status", "paused": bool(paused), **self._extras()}
+        self.hub.publish("status", encode_frame(json.dumps(payload).encode("utf-8"), OP_TEXT))
+
+    def _extras(self) -> dict:
+        if self.extras is None:
+            return {}
+        try:
+            return dict(self.extras())
+        except Exception:  # a broken status source must not stop the feed
+            return {}
 
     @property
     def states_sent(self) -> int:
@@ -185,6 +212,8 @@ class CouchObserver:
             },
             "state_hz": self.cfg.couch_state_hz,
             "video_fps": self.cfg.couch_video_fps,
+            "game_hz": self.cfg.game_hz,
+            "milestone_labels": dict(LABELS),
         }
         self.hub.publish("hello", encode_frame(json.dumps(payload).encode("utf-8"), OP_TEXT))
 
@@ -192,6 +221,16 @@ class CouchObserver:
         if tick.action:
             self.history.append(tick.action)
         self._record_presses(tick)
+        for name in tick.milestones:
+            landed = {
+                "name": name,
+                "label": LABELS.get(name, name),
+                "game_tick": int(tick.game_tick),
+                "game_time": game_time(tick.game_tick, self.cfg.game_hz),
+            }
+            self.last = landed
+            if len(self.landed) < 16:
+                self.landed.append(landed)
 
         now = time.perf_counter()
         if self.video_ticker.ready(now):
@@ -201,6 +240,7 @@ class CouchObserver:
             self._measure_rate(tick.step, now)
             self.hub.publish("state", encode_frame(json.dumps(self._state(tick, now)).encode("utf-8"), OP_TEXT))
             self.events.clear()
+            self.landed.clear()
 
     def _record_presses(self, tick) -> None:
         motor = getattr(self.fly, "motor", None)
@@ -248,4 +288,44 @@ class CouchObserver:
             "panic": bool(tick.panic),
             "panics": int(tick.panics),
             "spikes": spikes,
+            **self._journey(tick),
+        }
+
+    def _journey(self, tick) -> dict:
+        """The milestone half of a state message."""
+        hz = self.cfg.game_hz
+        last = self.last
+        if last is None and tick.last_milestone:
+            # Restored from a save or a replay: the fly knows its last
+            # milestone even though none has landed in this run yet.
+            since = int(tick.since_milestone)
+            last = {
+                "name": tick.last_milestone,
+                "label": LABELS.get(tick.last_milestone, tick.last_milestone),
+                "game_tick": int(tick.game_tick) - since,
+                "game_time": game_time(int(tick.game_tick) - since, hz),
+            }
+        countdown = None
+        if self.replay_target is not None:
+            name, at = self.replay_target
+            left = int(at) - int(tick.game_tick)
+            if left >= 0:
+                countdown = {
+                    "name": name,
+                    "label": LABELS.get(name, name),
+                    "ticks": left,
+                    "text": f"{LABELS.get(name, name)} in {game_time(left, hz)}",
+                }
+        return {
+            "game_tick": int(tick.game_tick),
+            "game_time": game_time(tick.game_tick, hz),
+            "milestones": list(self.landed),
+            "last_milestone": last,
+            "since_milestone": int(tick.since_milestone),
+            "since_time": game_time(tick.since_milestone, hz),
+            "generation": int(tick.brain_episodes),
+            "brain_file": str(tick.brain),
+            "countdown": countdown,
+            "paused": False,
+            **self._extras(),
         }

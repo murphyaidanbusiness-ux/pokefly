@@ -35,6 +35,14 @@ EXPECTED_FIELDS = {
     "in_battle",
     "panic",
     "panics",
+    # The journey (docs/spec-milestones.md section 1).
+    "game_tick",
+    "milestone",
+    "milestones",
+    "since_milestone",
+    "last_milestone",
+    "brain",
+    "brain_episodes",
 }
 
 

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from .config import Config
 
 PARTS: tuple[str, ...] = ("tile", "map", "event", "level", "badge")
@@ -44,6 +46,18 @@ class RamSnapshot:
     event_bits: int  # popcount of the whole wEventFlags array
     name_byte: int  # wPlayerName[0]
     joy_ignore: int  # wJoyIgnore
+    # For the milestones only; the reward never reads these. Defaults so a
+    # test that only cares about the reward can leave them out.
+    battle: int = 0  # wIsInBattle raw: 0 none, 1 wild, 2 trainer, $FF lost
+    party_species: tuple[int, ...] = ()  # wPartySpecies, one per member
+    party_hp: tuple[int, ...] = ()  # wPartyMon{n}HP, one per member
+    exp_sum: int = 0  # wPartyMon{n}Exp summed over the party
+
+    @property
+    def named(self) -> bool:
+        """The intro has written a player name, so these bytes are a game in
+        progress and not uninitialised RAM."""
+        return self.name_byte not in _NOT_A_NAME
 
 
 def has_control(snapshot: RamSnapshot) -> bool:
@@ -79,6 +93,31 @@ class RewardTracker:
         self._events = 0
         self._badges = 0
         self._started = False
+
+    def get_state(self) -> dict:
+        tiles = np.array(sorted(self.tiles), dtype=np.int32).reshape(-1, 3)
+        return {
+            "tiles": tiles,
+            "maps": sorted(self.maps),
+            "map_order": list(self.map_order),
+            "total": self.total,
+            "parts": dict(self.parts),
+            "levels": self._levels,
+            "events": self._events,
+            "badges": self._badges,
+            "started": self._started,
+        }
+
+    def set_state(self, state: dict) -> None:
+        self.tiles = {tuple(int(v) for v in row) for row in np.asarray(state["tiles"]).reshape(-1, 3)}
+        self.maps = {int(m) for m in state["maps"]}
+        self.map_order = [int(m) for m in state["map_order"]]
+        self.total = float(state["total"])
+        self.parts = {str(k): float(v) for k, v in state["parts"].items()}
+        self._levels = int(state["levels"])
+        self._events = int(state["events"])
+        self._badges = int(state["badges"])
+        self._started = bool(state["started"])
 
     @property
     def started(self) -> bool:

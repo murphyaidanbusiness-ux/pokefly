@@ -21,6 +21,7 @@
  *   a hop          the same reflex: the fly startles off the cushion.
  *   leaning in     the game is in a battle.
  *   front legs rubbing together   START was pressed. Flies groom.
+ *   a gold pulse in the head      a milestone just landed (three beats).
  *
  * Nothing here is downloaded. Every shape is a three.js primitive, a lathe, or
  * a hand-drawn `Shape` for the wings.
@@ -29,6 +30,8 @@
 import { FLY, POOL_HEX, POOLS, approach, clamp } from './theme.js';
 
 const PRESS_SECONDS = 0.17;
+const GOLD_SECONDS = 1.6; // the milestone pulse: three beats, then gone
+const GOLD = { r: 1.0, g: 0.78, b: 0.22 };
 const PAD_W = 0.3;
 const PAD_D = 0.16;
 
@@ -122,6 +125,7 @@ export class FlyActor {
     this.battle = 0;
     this.groom = 0;
     this.hopTimer = 0;
+    this.gold = 0;
     this.twitch = 0;
     this.nextTwitch = 3 + Math.random() * 5;
     this.headYaw = 0;
@@ -463,6 +467,11 @@ export class FlyActor {
     this.hopTimer = 0.46;
   }
 
+  /** A milestone landed: a short gold pulse in the head. */
+  milestonePulse() {
+    this.gold = GOLD_SECONDS;
+  }
+
   update(dt, signals) {
     this.time += dt;
     const t = this.time;
@@ -480,6 +489,7 @@ export class FlyActor {
     this.panic = Math.max(0, this.panic - dt * 1.4);
     this.battle = approach(this.battle, signals.inBattle ? 1 : 0, 3.5, dt);
     this.groom = Math.max(0, this.groom - dt * 1.1);
+    this.gold = Math.max(0, this.gold - dt);
 
     this._pose(dt, t);
     this._controls(dt);
@@ -590,5 +600,26 @@ export class FlyActor {
     this.brainLight.intensity = 0.25 + 1.6 * level + 2.2 * this.flash;
     this.mat.eye.emissiveIntensity = 0.45 + 0.5 * level;
     this.mat.head.emissiveIntensity = 1 + 2.5 * this.flash;
+
+    // The milestone pulse wins over everything above while it lasts: three
+    // gold beats that fade out, in the brain glow, its light and the head.
+    if (this.gold > 0) {
+      const phase = GOLD_SECONDS - this.gold;
+      const beat = 0.5 + 0.5 * Math.cos((phase * 3 * Math.PI * 2) / GOLD_SECONDS);
+      const k = (this.gold / GOLD_SECONDS) * (0.55 + 0.45 * beat);
+      const color = this.brain.material.color;
+      color.setRGB(
+        color.r + (GOLD.r - color.r) * k,
+        color.g + (GOLD.g - color.g) * k,
+        color.b + (GOLD.b - color.b) * k,
+      );
+      this.brainLight.color.copy(color);
+      this.brainLight.intensity += 5.0 * k;
+      this.brain.material.opacity = clamp(this.brain.material.opacity + 0.5 * k, 0, 0.95);
+      this.brain.scale.multiplyScalar(1 + 0.35 * k);
+      this.mat.head.emissive.setRGB(0.07 + 0.55 * k, 0.04 + 0.4 * k, 0.016);
+    } else {
+      this.mat.head.emissive.setHex(0x120a04);
+    }
   }
 }

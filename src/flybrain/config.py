@@ -46,7 +46,47 @@ MAP_NAMES: dict[int, str] = {
     0x26: "Red's house 2F",
     0x27: "Blue's house",
     0x28: "Oak's Lab",
+    0x29: "Viridian Pokemon Center",
+    0x2A: "Viridian Mart",
+    0x2F: "Viridian Forest north gate",
+    0x31: "Route 2 gate",
+    0x32: "Viridian Forest south gate",
+    0x33: "Viridian Forest",
+    0x36: "Pewter Gym",
+    0x3A: "Pewter Pokemon Center",
 }
+
+# Map ids the milestones test against. Every one is from pret/pokered
+# `constants/map_constants.asm` (the `map_const` lines, whose trailing comment
+# is the id), read 2026-09-22. The first four were also seen in runs here.
+PALLET_TOWN = 0x00  # PALLET_TOWN
+VIRIDIAN_CITY = 0x01  # VIRIDIAN_CITY
+PEWTER_CITY = 0x02  # PEWTER_CITY
+ROUTE_1 = 0x0C  # ROUTE_1
+REDS_HOUSE_1F = 0x25  # REDS_HOUSE_1F
+REDS_HOUSE_2F = 0x26  # REDS_HOUSE_2F
+OAKS_LAB = 0x28  # OAKS_LAB
+VIRIDIAN_FOREST = 0x33  # VIRIDIAN_FOREST
+# Every `*_POKECENTER` constant in the same file. The Indigo Plateau lobby
+# heals too but is not named a Pokemon Center there, so it is not in the set.
+POKEMON_CENTERS: frozenset[int] = frozenset(
+    {
+        0x29,  # VIRIDIAN_POKECENTER
+        0x3A,  # PEWTER_POKECENTER
+        0x40,  # CERULEAN_POKECENTER
+        0x44,  # MT_MOON_POKECENTER
+        0x51,  # ROCK_TUNNEL_POKECENTER
+        0x59,  # VERMILION_POKECENTER
+        0x85,  # CELADON_POKECENTER
+        0x8D,  # LAVENDER_POKECENTER
+        0x9A,  # FUCHSIA_POKECENTER
+        0xAB,  # CINNABAR_POKECENTER
+        0xB6,  # SAFFRON_POKECENTER
+    }
+)
+# wIsInBattle: "lost battle, this is -1; no battle, this is 0; wild battle,
+# this is 1; trainer battle, this is 2" (ram/wram.asm).
+BATTLE_LOST = 0xFF
 
 
 def map_name(map_id: int) -> str:
@@ -307,6 +347,17 @@ class Config:
     player_name_addr: int = 0xD158  # wPlayerName, first character
     joy_ignore_addr: int = 0xCD6B  # wJoyIgnore, nonzero while the engine is
     # swallowing input (cutscene, map transition)
+    # For the milestones. pret/pokered `ram/wram.asm` (read 2026-09-22) lays out
+    # "Party Data" as wPartyCount db, wPartySpecies ds PARTY_LENGTH + 1, then
+    # wPartyMons, six `party_struct`s. So wPartySpecies is wPartyCount + 1 and
+    # wPartyMon1 is wPartyCount + 8 = 0xD16B. The struct's field offsets
+    # (species db, HP dw, level db, status db, two types, catch rate, four
+    # moves, OT id dw, exp ds 3, ...) are checked against the verified
+    # wPartyMon1Level above: species 0, HP 1, exp 0x0E, level 0x21, and
+    # 0xD16B + 0x21 is exactly 0xD18C.
+    party_species_addr: int = 0xD164  # wPartySpecies, one byte per member, $FF ends it
+    party_hp_addr: int = 0xD16C  # wPartyMon1HP, two bytes big endian
+    party_exp_addr: int = 0xD179  # wPartyMon1Exp, three bytes big endian
 
     reward_tile: float = 1.0  # first visit to a (map, x, y) this episode
     reward_map: float = 5.0  # first entry to a map id this episode. A second
@@ -338,6 +389,30 @@ class Config:
     start_state_path: Path = Path("states/bedroom.state")
     train_log_path: Path = Path("runs/train.csv")
 
+    # ---- milestones, replay and the journey -------------------------------
+    game_hz: int = 60  # emulator ticks per second of game time
+    milestone_dir: Path = Path("milestones")  # journey.json and one folder of
+    # replay files per milestone. run.py and train.py point it at the repo;
+    # the library functions record nothing unless handed a recorder.
+    snapshot_every: int = 300  # ticks between the rolling buffer's fly snapshots
+    # (five seconds). Each costs well under a millisecond: the
+    # emulator half is a reference to the last anchor plus
+    # the buttons pressed since (see `emulator.py`).
+    replay_lead: int = 900  # how far before a milestone its replay starts (15 s)
+    anchor_every: int = 18_000  # ticks between full emulator savestates (five
+    # minutes of game). One costs about 20 ms through
+    # PyBoy's per-byte writer, which is why it is not taken
+    # every snapshot. A replay fast-forwards at most this
+    # many ticks of recorded input, about 3 s at 6,400
+    # ticks/s. Lower it for faster replays, raise it for
+    # fewer hitches.
+    journey_dir: Path = Path("saves/journey")  # the journey save
+    autosave_minutes: float = 5.0  # wall-clock minutes between journey autosaves
+    journey_episode_ticks: int = 216_000  # a journey brain's `episodes_trained`
+    # advances once per this many learning ticks (an hour
+    # of game time), so the learning-rate schedule keeps
+    # decaying while you watch.
+
     # ---- emulator -------------------------------------------------------
     map_id_addr: int = 0xD35E  # Pokemon Red: current map id (wCurMap)
     player_y_addr: int = 0xD361  # Pokemon Red: player Y tile (wYCoord)
@@ -360,3 +435,55 @@ class Config:
     def n_kc_active(self) -> int:
         """How many Kenyon cells survive the APL inhibition each tick."""
         return max(1, int(round(self.kc_active_frac * self.n_kc)))
+
+
+# Config fields that change how a run is shown, how long it is or where its
+# files go, and never what the next tick does. Everything else is in the
+# fingerprint a fly snapshot carries: restoring a snapshot into a fly built
+# from different numbers would not repeat anything.
+_NOT_DYNAMICS: frozenset[str] = frozenset(
+    {
+        "rom_path",
+        "headless",
+        "uncapped",
+        "hud",
+        "max_steps",
+        "load_state",
+        "save_state",
+        "train_ticks",
+        "episode_ticks",
+        "eval_every",
+        "eval_block",
+        "best_margin",
+        "eval_block_seed",
+        "checkpoint_every",
+        "training_state_path",
+        "best_brain_path",
+        "start_state_path",
+        "train_log_path",
+        "game_hz",
+        "milestone_dir",
+        "snapshot_every",
+        "replay_lead",
+        "anchor_every",
+        "journey_dir",
+        "autosave_minutes",
+    }
+)
+
+
+def dynamics_fingerprint(cfg: Config) -> str:
+    """A short hash of every number that decides what the next tick does."""
+    import hashlib
+    import json
+    from dataclasses import fields as dataclass_fields
+
+    values = {}
+    for item in dataclass_fields(cfg):
+        name = item.name
+        if name in _NOT_DYNAMICS or name.startswith(("couch_", "hud_")):
+            continue
+        value = getattr(cfg, name)
+        values[name] = str(value) if isinstance(value, Path) else value
+    text = json.dumps(values, sort_keys=True, default=repr)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]

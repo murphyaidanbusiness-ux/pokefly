@@ -89,6 +89,49 @@ class MotorBridge:
         )
         self._draw_weights = weights / weights.sum()
 
+    # -- snapshots ---------------------------------------------------------
+
+    def get_state(self) -> dict:
+        """Everything that decides the next update, copied. `held` keeps its
+        insertion order, because that is the order releases are issued in."""
+        return {
+            "accum": self.accum.copy(),
+            "baseline": self.baseline.copy(),
+            "excursion": self.excursion.copy(),
+            "held": [[pool, ticks] for pool, ticks in self.held.items()],
+            "cooldown": dict(self.cooldown),
+            "fire_counts": dict(self.fire_counts),
+            "queue": list(self.queue),
+            "panic_count": self.panic_count,
+            "chosen": list(self.chosen),
+            "panicked": list(self.panicked),
+            "pulse": self.pulse,
+            "position_stuck": self.position_stuck,
+            "idle_ticks": self.idle_ticks,
+            "last_position": None if self._last_position is None else list(self._last_position),
+            "pressed_this_tick": self._pressed_this_tick,
+            "rng": self.rng.bit_generator.state,
+        }
+
+    def set_state(self, state: dict) -> None:
+        self.accum = np.array(state["accum"], dtype=np.float32)
+        self.baseline = np.array(state["baseline"], dtype=np.float32)
+        self.excursion = np.array(state["excursion"], dtype=np.float32)
+        self.held = {str(pool): int(ticks) for pool, ticks in state["held"]}
+        self.cooldown = {str(k): int(v) for k, v in state["cooldown"].items()}
+        self.fire_counts = {str(k): int(v) for k, v in state["fire_counts"].items()}
+        self.queue = [str(pool) for pool in state["queue"]]
+        self.panic_count = int(state["panic_count"])
+        self.chosen = [str(pool) for pool in state["chosen"]]
+        self.panicked = [str(pool) for pool in state["panicked"]]
+        self.pulse = float(state["pulse"])
+        self.position_stuck = int(state["position_stuck"])
+        self.idle_ticks = int(state["idle_ticks"])
+        last = state["last_position"]
+        self._last_position = None if last is None else tuple(int(v) for v in last)
+        self._pressed_this_tick = bool(state["pressed_this_tick"])
+        self.rng.bit_generator.state = state["rng"]
+
     # -- button plumbing ---------------------------------------------------
 
     def _start(self, pool: str, panic: bool = False) -> None:

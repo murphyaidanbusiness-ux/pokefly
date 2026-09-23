@@ -37,15 +37,19 @@ If the file is missing, `run.py` prints the exact path it wanted and exits 2.
 ## Run
 
 ```powershell
-& .\.venv\Scripts\python.exe run.py                                   # windowed, 60 Hz, HUD
-& .\.venv\Scripts\python.exe run.py --start-state                     # from the bedroom savestate
+& .\.venv\Scripts\python.exe run.py                                   # the journey: windowed, 60 Hz, HUD, saved
+& .\.venv\Scripts\python.exe run.py --start-state                     # one run from the bedroom savestate
 & .\.venv\Scripts\python.exe run.py --naive --start-state             # the untrained fly, for comparison
 & .\.venv\Scripts\python.exe run.py --headless --uncapped --no-hud --max-steps 3000
 ```
 
-`run.py` loads `brains/latest.npz` when that file exists and prints one line
-saying which brain it loaded, how long it trained, and the evaluation-block
-score it was kept for and the episode that score came from. `--naive` ignores it.
+With no flags `run.py` is a **journey**: it carries on from `saves/journey/`
+where the last session left off, or starts one from the bedroom with a copy of
+the best brain (see "The journey"). With any flag that picks its own brain or
+start point it is one ordinary run, as before: it loads `brains/latest.npz`
+when that file exists and prints one line saying which brain it loaded, how
+long it trained, and the evaluation-block score it was kept for and the
+episode that score came from. `--naive` ignores it.
 
 | flag | what it does |
 |---|---|
@@ -64,10 +68,22 @@ score it was kept for and the episode that score came from. `--naive` ignores it
 | `--naive` | ignore any saved brain: the untrained fly |
 | `--learn` | keep learning while you watch |
 | `--save-brain` | with `--learn`, write the learned brain on exit: back to `--brain`, or to `brains/journey.npz` when there is no `--brain` or it names `brains/latest.npz`. It never writes the best brain, which only training's evaluation blocks may replace |
+| `--replay NAME` | replay milestone NAME from `milestones/NAME/`; implies `--couch` unless `--headless` |
+| `--portrait` | the couch scene in the 9:16 layout for Reels; implies `--couch` |
+| `--no-journey` | one run, no journey save |
+| `--fresh` | discard the journey save and start a new journey (asks for `y`; `--fresh --yes` does not) |
+| `--no-learn` | journey mode: freeze the journey brain |
+
+A run is a journey unless it has `--no-journey`, `--replay`, `--brain`,
+`--naive`, `--load-state`, `--start-state`, `--save-brain`, `--connectome`, or
+a non-default `--seed` or `--neurons`; it says which one turned it off.
 
 `P` or `Space` in the terminal pauses: the buttons come up, the game and the
-brain stand still, and the same key resumes. Ctrl+C exits cleanly: buttons
-released, emulator closed, cursor restored.
+brain stand still, and the same key resumes. `S` saves the journey now. Ctrl+C
+exits cleanly: the tick in progress is finished (the loop reads Ctrl+C as a
+flag between ticks, so an exit save is never half a tick), the journey is
+saved, buttons released, emulator closed, cursor restored. A second Ctrl+C
+stops at once, and then nothing is saved rather than a torn tick.
 
 There is no install step. `run.py` puts `src/` on `sys.path` itself.
 
@@ -104,6 +120,200 @@ copy of three.js (`scene/vendor/`, MIT), served by a stdlib HTTP server with a
 hand-written WebSocket (`src/flybrain/couch.py`); there is no build step and no
 new Python dependency. `scene/PROTOCOL.md` documents the messages,
 `scene/REVIEW.md` is the visual checklist.
+
+## The journey
+
+Everything in this section serves a camera: an Instagram series of the fly's
+journey through Pokemon Red. Found headless at 1,500 ticks a second, shown at
+60.
+
+### Milestones
+
+`src/flybrain/milestones.py` holds a fixed table of named moments, in story
+order, each a pure predicate over the RAM snapshot this tick and the one
+before it:
+
+| name | what the overlay says | lands when |
+|---|---|---|
+| `left_bedroom` | left the bedroom | the map goes from Red's house 2F to anything else |
+| `left_house` | left the house | Red's house 1F straight to Pallet Town (the front door; the lab and the rival's house also open onto Pallet, so the previous map is checked) |
+| `entered_lab` | walked into Oak's lab | in Oak's Lab (0x28) with control |
+| `got_starter` | got a Pokemon | the party count goes from 0 to 1 |
+| `first_battle` | first battle | wIsInBattle is 1 (wild) or 2 (trainer) |
+| `first_win` | won a battle | a battle ends (wIsInBattle back to 0) that never read $FF (pokered: "lost battle, this is -1"), in which the party gained experience (only defeating a Pokemon gives any, so running away is not a win), with every party member's HP above zero |
+| `route_1`, `viridian_city`, `viridian_forest`, `pewter_city` | reached ... | in that map with control |
+| `first_level_up` | first level up | the party's level sum rises with the party size unchanged (so the starter and a catch do not count) |
+| `pokemon_center` | walked into a Pokemon Center | in any of the eleven `*_POKECENTER` maps with control |
+| `first_badge` | won the Boulder Badge | wObtainedBadges bit 0 |
+
+Map ids beyond the four seen in runs here (Pallet Town, Red's house 1F and 2F,
+the lab) are from pret/pokered `constants/map_constants.asm`, cited in
+`config.py`. The party addresses are laid out from `ram/wram.asm` (wPartyCount,
+then wPartySpecies of PARTY_LENGTH + 1 bytes, then six `party_struct`s) and
+checked against the already verified wPartyMon1Level: HP at 0xD16C, experience
+at 0xD179, both in `config.py` with their symbol names. "With control" is the
+reward layer's `has_control`: a player name and wJoyIgnore at zero, which keeps
+boot-time garbage and mid-cutscene map writes out.
+
+**Game time.** Ticks at 60 a second, counted from the cold boot, shown as
+`m:ss`. A run from a savestate starts its clock at the state's own offset,
+kept in a sidecar beside it (`<state>.json`). `states/bedroom.state` is 5,047
+ticks in: 5,039 ticks of the naive fly plus 8 release ticks, verified by
+regenerating the state with seed 0 and comparing it byte for byte.
+`--make-start-state` and `--save-state` write the sidecar; a state without one
+counts from zero and says so.
+
+When one lands the HUD and the plain log print:
+
+```
+milestone: left the house  3:39 of game time  (brain latest.npz, 100 episodes)
+```
+
+and `TickState` carries `milestone`, `since_milestone` (game ticks since the
+last one) and `game_tick` for any observer.
+
+**The journey file.** `milestones/journey.json` holds the first time each
+milestone was ever reached, across every run and every brain: name, game tick
+and `m:ss`, the wall-clock date, the brain file and its episodes trained, and
+the run kind (`watch`, `train` or `eval`). A milestone goes in once and is
+never overwritten. `run.py` and `train.py` write it; `train.py --no-record`
+does not.
+
+**Training.** Every CSV row has one column per milestone, `ms_<name>`, holding
+the tick of that episode it first landed on (blank if never), so a learning
+curve of "ticks to leave the house" is in the log. `train.py --milestones`
+prints it by 10-episode bucket from `runs/train.csv` (or `--milestones PATH`)
+and stops. A CSV written before this has other columns and is refused, as
+before: pass a new `--log`.
+
+### Replaying a milestone for the camera
+
+While any run is going, a rolling buffer keeps a fly snapshot every
+`snapshot_every` ticks (300, five seconds) for the last `replay_lead` ticks
+(900, fifteen seconds). When a milestone lands for the first time on the
+journey (or has no replay yet), the buffered snapshot nearest 900 ticks before
+it is written to `milestones/<name>/` (`start.state` + `start.npz`, and a
+readable `replay.json`) with the tick it landed on. Then:
+
+```powershell
+& .\.venv\Scripts\python.exe run.py --replay left_house              # couch scene, real speed
+& .\.venv\Scripts\python.exe run.py --replay left_house --portrait   # 9:16 for Reels
+& .\.venv\Scripts\python.exe run.py --replay left_house --headless --max-steps 1200
+```
+
+restores it and runs on: the fly does exactly what it did, and the terminal
+says so (`replay: left the house landed at 3:39 (tick 13175), exactly as
+recorded`). The couch overlay counts down in game time ("left the house in
+0:07"), then flashes the milestone.
+
+**What a snapshot is.** Everything that decides the next tick: the emulator,
+the brain's membrane potentials, refractory counters and last spikes, the
+optic lobe's previous frame, the motor's accumulators, baselines, cooldowns,
+held buttons and panic counters, the mushroom body's weights, traces, active
+code, value and `_prev_value`, the reward tracker's visited sets and
+baselines, the milestone tracker, and the bit-generator state of both RNGs in
+the chain (the optic lobe's noise and the motor's panic draws; the other
+seeded generators are only used at construction). The weights travel with it,
+so a milestone found while learning replays with the weights of that moment.
+It carries a fingerprint of every config number that affects a tick; a
+snapshot from a fly built differently is refused rather than replayed wrong.
+
+**What it costs, and why it is two things.** A full PyBoy savestate costs
+about 20 ms here (18.4 ms median, measured): PyBoy writes its 167,677 bytes one
+Python-level `write` call at a time. That is over the 2 ms budget, so the
+buffer does not take one each time. The emulator keeps an **anchor**, a full
+savestate taken every `anchor_every` ticks (18,000, five minutes of game) or
+for free whenever a state file is loaded, and logs every button event since.
+A buffered snapshot is the anchor plus that log plus the fly's arrays:
+**0.24 ms median** in the test, 0.33 ms median over the 60,000-tick run below
+(20 ms once every five minutes of game, when it re-anchors). Restoring one
+loads the anchor and replays the logged buttons tick by tick at about 6,400
+ticks a second, so a replay starts after at most about 3 s of fast-forward.
+It is exact because the emulator is deterministic given its inputs, which the
+tests check: 600 ticks from one snapshot restored into two fresh flies give
+identical presses, positions and value estimates, and so does
+snapshot-run-restore-run in one process. PyBoy's queue of button events that
+have not reached the joypad yet is not in a savestate, so a snapshot carries
+those too and a restore re-issues them.
+
+The 60,000-tick run from the bedroom with `brains/latest.npz`
+(`run.py --start-state --headless --uncapped --no-hud --max-steps 60000`, 50 s):
+
+```
+milestone: left the bedroom  2:03 of game time  (brain latest.npz, 100 episodes)
+milestone: left the house  3:39 of game time  (brain latest.npz, 100 episodes)
+milestone: walked into Oak's lab  4:28 of game time  (brain latest.npz, 100 episodes)
+game time at the end: 18:04
+```
+
+It never got a Pokemon: walking into the lab is not the cutscene that gives
+one (that starts in the grass north of Pallet Town), and the brain has no
+reason yet to go there. Replays were written for all three.
+
+### Portrait mode
+
+`run.py --portrait` (or `?portrait=1` on the page, so one tab can be portrait
+while another is not) lays the scene out 9:16 for Reels: the CRT close-up in
+the top 45 percent, framed so the whole picture fills the width; the fly on
+the couch with its controller in the middle; the milestone strip across the
+bottom with the last milestone, a live game-time timer since it, and the
+brain's generation (its episodes trained), plus a compact status bar. Keys `1`
+to `4` still work; `1` in portrait is that composition. It draws at the
+device pixel ratio and fills the window with no scrollbars. In both layouts a
+milestone flashes its name and game time for three seconds and pulses gold in
+the fly's head. `scene/REVIEW.md` has the checklist; nobody has looked at it
+yet.
+
+### How to record
+
+Open the scene at the size you want to post and record the browser window:
+
+- **OBS**: a Window Capture of the browser (or a Browser Source pointed at
+  `http://127.0.0.1:8765/?portrait=1` at 1080x1920), canvas 1080x1920, 60 fps.
+- **Windows**: `Win+Alt+R` in the Xbox Game Bar records the focused window; it
+  lands in `Videos\Captures`.
+- For exactly 1080x1920 on an ordinary monitor, Chrome DevTools' device toolbar
+  with a custom 1080x1920 device at DPR 1 gives the page that viewport.
+
+A milestone replay starts about 15 seconds before the moment, so start
+recording, then start `run.py --replay NAME --portrait`.
+
+### Continue where it left off
+
+Watching is one long save file:
+
+- **`python run.py`** with no flags continues the journey in `saves/journey/`
+  (the game, every neuron, the brain, the milestone clock) and prints one line
+  with its game time; with no save it starts a new journey from
+  `states/bedroom.state` with a copy of `brains/latest.npz` and says so.
+- **It learns while you watch**, into the journey brain
+  (`saves/journey/brain.npz`, an ordinary brain file), on the same
+  learning-rate schedule as training: its `episodes_trained` advances once per
+  hour of game time of learning, so the rate keeps decaying. `brains/latest.npz`
+  is never written by watching; a test checks it is byte-identical after a
+  journey run. `--no-learn` freezes the journey brain.
+- **Autosave** every `autosave_minutes` of wall clock (5, in `config.py`), and
+  always on the way out: `--max-steps`, Ctrl+C, a closed window. A save is a
+  full snapshot on a fresh savestate (about 55 ms in all), written atomically:
+  every file goes to a `.tmp` name, then each current file becomes `.bak` and
+  the `.tmp` takes its place, the manifest (`journey.json`, SHA-256 of every
+  file) last. Whenever a save is interrupted, the loader finds either the new
+  save or the previous one whole, never a mixture (a test kills a save at
+  every one of its eleven renames). The previous save is kept as `.bak`.
+- **Save now**: `S` in the terminal, or the **Save** button on the couch
+  overlay. **Pause** is there too, and toggles the same pause as `P`. The
+  overlay shows "saved 0:12 ago" and the game time. The button sends the
+  server one text frame, `{"cmd": "save"}` or `{"cmd": "pause"}`; the server
+  parses exactly those two, ignores anything else, and hands them to the loop
+  through a bounded queue between ticks (`scene/PROTOCOL.md`).
+- **`--fresh`** discards the journey save and starts over. It asks for a `y` at
+  a terminal; on a pipe it refuses unless given `--yes`. It does not touch
+  `milestones/journey.json`, which records firsts across every journey.
+- **`--no-journey`** is the old behaviour: run without touching the save.
+
+The journey save refuses to load into a fly built with other numbers (a
+different `--seed` or `--neurons`, or a changed tuning value in `config.py`);
+those flags turn the journey off anyway, but a tuning change needs `--fresh`.
 
 ## Train
 
@@ -192,8 +402,10 @@ in `brains/latest.npz`; pass `--best` a new path for a clean experiment.
 | `--make-start-state` | write the start savestate and stop |
 | `--evaluate PATH` / `--evaluate-naive` | skip training, run the held-out evaluation (seeds 90000 up) |
 | `--eval-log PATH` | with `--evaluate`, one CSV row per episode |
+| `--milestones [CSV]` | print median ticks to each milestone by 10-episode bucket (default `runs/train.csv`) and stop |
+| `--no-record` | do not write `milestones/journey.json` or milestone replays |
 
-`brains/`, `states/` and `runs/` are gitignored.
+`brains/`, `states/`, `runs/`, `saves/` and `milestones/` are gitignored.
 
 ## How the brain is wired
 
@@ -754,7 +966,7 @@ are the reasons, not excuses:
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-144 tests, all headless, about a minute. They pass with no ROM present; the
+224 tests, all headless, about a minute. They pass with no ROM present; the
 handful that need one skip when `roms/pokemon_red.gb` is absent, and the short
 training test also needs `states/bedroom.state`.
 

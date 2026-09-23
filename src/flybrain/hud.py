@@ -17,6 +17,7 @@ import time
 from collections import deque
 
 from .config import POOL_NAMES, Config
+from .milestones import game_time, milestone_line
 from .reward import PARTS
 
 _HOME = "\x1b[H"
@@ -49,6 +50,8 @@ class Hud:
         self._last_step = 0
         self._last_time = self.start
         self._rate = 0.0
+        self.milestone_lines: deque[str] = deque(maxlen=3)
+        self.status = None  # run.py: a callable returning the journey status
         os.system("")  # enables VT processing on a Windows console
         sys.stdout.write(_HIDE_CURSOR + "\x1b[2J")
         sys.stdout.flush()
@@ -58,6 +61,8 @@ class Hud:
             self.history.append(tick.action)
         for pool in tick.started:
             self.presses[pool] += 1
+        for name in tick.milestones:
+            self.milestone_lines.append(milestone_line(name, tick.game_tick, tick.brain, tick.brain_episodes))
         if tick.step % self.cfg.hud_every:
             return
         now = time.perf_counter()
@@ -91,7 +96,10 @@ class Hud:
             f"  {tick.map_name} ({tick.map_id})   x {tick.x:<4d} y {tick.y:<4d}   "
             f"battle {'YES' if tick.in_battle else 'no '}   panics {tick.panics}",
             f"  presses {' '.join(f'{n}:{self.presses[n]}' for n in POOL_NAMES)}",
+            f"  game time {game_time(tick.game_tick)}   since the last milestone {game_time(tick.since_milestone)}"
+            + _saved(self.status),
             "",
+            *(f"  {line}" for line in self.milestone_lines),
         ]
         sys.stdout.write(_HOME + "\n".join(line.ljust(86) for line in lines) + "\n" + _CLEAR_BELOW)
         sys.stdout.flush()
@@ -99,6 +107,16 @@ class Hud:
     def close(self) -> None:
         sys.stdout.write(_SHOW_CURSOR + "\n")
         sys.stdout.flush()
+
+
+def _saved(status) -> str:
+    if status is None:
+        return ""
+    try:
+        ago = status().get("saved_ago")
+    except Exception:
+        return ""
+    return "   journey not saved yet" if ago is None else f"   saved {game_time(int(ago * 60))} ago"
 
 
 class PlainLog:
@@ -112,6 +130,8 @@ class PlainLog:
         self._last_time = self.start
 
     def __call__(self, tick) -> None:
+        for name in tick.milestones:
+            print(milestone_line(name, tick.game_tick, tick.brain, tick.brain_episodes), flush=True)
         now = time.perf_counter()
         if now - self._last_time < 1.0:
             return

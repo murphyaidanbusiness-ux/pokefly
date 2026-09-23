@@ -5,26 +5,41 @@
  * anything. The render loop runs at the display's rate and the feed arrives at
  * about 45 state messages and 30 video frames a second, so everything the fly
  * does is smoothed toward the last message rather than snapped to it.
+ *
+ * Two layouts. Landscape is the room through one orbit camera. Portrait
+ * (`?portrait=1`, or `run.py --portrait`) is 9:16 for Reels: view 1 there is a
+ * composition of two cameras drawn into two bands of one canvas, the TV
+ * close-up in the top 45 percent and the fly with its controller below it,
+ * with the milestone strip (DOM) in the band at the bottom. Views 2 to 4 are
+ * the ordinary orbit views, full frame, in either layout.
  */
 
 import * as THREE from '../vendor/three.module.js';
 
 import { FlyActor } from './fly.js';
+import { JourneyPanel } from './journey.js';
 import { Monitor } from './monitor.js';
 import { Feed, PROTOCOL_VERSION, unpackBits } from './net.js';
 import { Orbit } from './orbit.js';
 import { Overlay } from './overlay.js';
 import { SEAT_HEIGHT, buildRoom } from './room.js';
-import { VIEWS, clamp } from './theme.js';
-import { Television } from './tv.js';
+import { PORTRAIT_FLY, PORTRAIT_TV_SHARE, VIEWS, clamp } from './theme.js';
+import { SCREEN, Television } from './tv.js';
+
+const PORTRAIT = new URLSearchParams(window.location.search).get('portrait') === '1';
 
 function boot() {
   const stage = document.getElementById('stage');
   const overlay = new Overlay(document.getElementById('overlay'));
+  if (PORTRAIT) document.body.classList.add('portrait');
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  // Portrait is for recording, so it draws at the full device pixel ratio
+  // and never trades resolution for frame rate; landscape caps it at 2.
+  const fullRatio = window.devicePixelRatio || 1;
+  renderer.setPixelRatio(PORTRAIT ? fullRatio : Math.min(fullRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x0b0910, 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.15;
@@ -39,12 +54,41 @@ function boot() {
   const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.05, 60);
   const orbit = new Orbit(THREE, camera, renderer.domElement);
   orbit.setView(VIEWS[1], true);
-  overlay.setView(VIEWS[1].name);
+
+  // The portrait composition's two cameras. Neither orbits.
+  const tvCamera = new THREE.PerspectiveCamera(30, 1, 0.05, 60);
+  const flyCamera = new THREE.PerspectiveCamera(PORTRAIT_FLY.fov, 1, 0.05, 60);
+  const flyEye = new THREE.Vector3(...PORTRAIT_FLY.eye);
+  const flyLook = new THREE.Vector3(...PORTRAIT_FLY.look);
+  let viewKey = '1';
+  const composed = () => PORTRAIT && viewKey === '1';
+  const viewName = () => (composed() ? 'portrait: the TV above the fly' : VIEWS[viewKey].name);
+  overlay.setView(viewName());
+
+  /** Back the TV camera off just far enough that the whole picture, with a
+   *  sliver of bezel, fits a band of this aspect. */
+  function frameTelevision(aspect) {
+    const half = Math.tan(THREE.MathUtils.degToRad(tvCamera.fov / 2));
+    const needH = SCREEN.height * 1.07;
+    const needW = SCREEN.width * 1.07;
+    const distance = Math.max(needH / (2 * half), needW / (2 * half * aspect));
+    tvCamera.aspect = aspect;
+    tvCamera.position.set(SCREEN.x, SCREEN.y, SCREEN.z + distance);
+    tvCamera.lookAt(SCREEN.x, SCREEN.y, SCREEN.z);
+    tvCamera.updateProjectionMatrix();
+  }
 
   buildRoom(THREE, scene);
   const television = new Television(THREE, scene);
   const fly = new FlyActor(THREE, scene, SEAT_HEIGHT);
   const monitor = new Monitor(THREE, scene);
+  const strip = document.getElementById('strip');
+  let feed = null;
+  const journey = new JourneyPanel(strip, document.getElementById('flash'), {
+    save: () => feed.command('save'),
+    pause: () => feed.command('pause'),
+  });
+  journey.onFlash = () => fly.milestonePulse();
 
   const signals = { firing: 0.08, dopamine: 0, inBattle: false };
   let hello = null;
@@ -56,7 +100,7 @@ function boot() {
 
   // -- the feed ---------------------------------------------------------
 
-  const feed = new Feed({
+  feed = new Feed({
     onHello(message) {
       hello = message;
       if (message.protocol !== PROTOCOL_VERSION) {
@@ -64,6 +108,7 @@ function boot() {
       }
       monitor.setLabels(message.spike_labels);
       overlay.setHello(message);
+      journey.setHello(message);
     },
     onState(state) {
       fly.setHeld(state.pressed);
@@ -80,12 +125,17 @@ function boot() {
       }
       monitor.setMbon(state.mbon);
       overlay.setState(state);
+      journey.setState(state);
+    },
+    onRunStatus(status) {
+      journey.setRunStatus(status);
     },
     onVideo(pixels) {
       television.draw(pixels);
     },
     onStatus(status, detail) {
       overlay.setStatus(status, detail);
+      journey.setFeed(status);
     },
   });
   feed.start();
@@ -93,18 +143,26 @@ function boot() {
   // -- keys -------------------------------------------------------------
 
   window.addEventListener('keydown', (event) => {
+    if (event.target && event.target.tagName === 'BUTTON' && (event.key === ' ' || event.key === 'Enter')) return;
     const key = event.key.toLowerCase();
     if (VIEWS[key]) {
+      viewKey = key;
       orbit.setView(VIEWS[key]);
-      overlay.setView(VIEWS[key].name);
+      overlay.setView(viewName());
+    } else if (key === 'p' || key === ' ') {
+      event.preventDefault();
+      journey.pause();
+    } else if (key === 's') {
+      journey.save();
     } else if (key === 'g') {
       const mode = television.toggleMode();
       note = mode === 'green' ? 'Game Boy green' : 'plain gray';
     } else if (key === 'h') {
       overlay.toggle();
     } else if (key === 'r') {
+      viewKey = '1';
       orbit.setView(VIEWS[1]);
-      overlay.setView(VIEWS[1].name);
+      overlay.setView(viewName());
     }
   });
 
@@ -139,7 +197,7 @@ function boot() {
     if (lowFor > 3 && shadowsOn) {
       dropShadows();
       lowFor = 0;
-    } else if (lowFor > 6 && renderer.getPixelRatio() > 1) {
+    } else if (lowFor > 6 && renderer.getPixelRatio() > 1 && !PORTRAIT) {
       renderer.setPixelRatio(1);
       note = 'drawing at a lower resolution to hold the frame rate';
       lowFor = 0;
@@ -162,6 +220,7 @@ function boot() {
     television.update(dt);
     monitor.update(elapsed);
     orbit.update(dt);
+    journey.update(dt);
     guardFrameRate(dt);
 
     overlay.setNote(
@@ -170,8 +229,51 @@ function boot() {
         (note ? '  |  ' + note : ''),
     );
 
-    renderer.render(scene, camera);
+    if (composed()) {
+      renderComposition();
+    } else {
+      renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+      renderer.render(scene, camera);
+    }
     requestAnimationFrame(frame);
+  }
+
+  /** Portrait view 1: TV band on top, fly band under it, the band behind the
+   *  strip at the bottom cleared to the dark of the room. Viewports are in
+   *  CSS pixels from the bottom left, as WebGL has them. */
+  function renderComposition() {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const stripHeight = Math.min(Math.round(strip.getBoundingClientRect().height), Math.round(height * 0.3));
+    const tvHeight = Math.round(height * PORTRAIT_TV_SHARE);
+    const flyHeight = Math.max(1, height - tvHeight - stripHeight);
+
+    renderer.setScissorTest(true);
+
+    frameTelevision(width / tvHeight);
+    renderer.setViewport(0, height - tvHeight, width, tvHeight);
+    renderer.setScissor(0, height - tvHeight, width, tvHeight);
+    renderer.render(scene, tvCamera);
+
+    flyCamera.aspect = width / flyHeight;
+    flyCamera.updateProjectionMatrix();
+    const jolt = orbit.shake * orbit.shake * 0.04;
+    flyCamera.position.set(
+      flyEye.x + (Math.random() - 0.5) * jolt,
+      flyEye.y + (Math.random() - 0.5) * jolt,
+      flyEye.z + (Math.random() - 0.5) * jolt,
+    );
+    flyCamera.lookAt(flyLook);
+    renderer.setViewport(0, stripHeight, width, flyHeight);
+    renderer.setScissor(0, stripHeight, width, flyHeight);
+    renderer.render(scene, flyCamera);
+
+    if (stripHeight > 0) {
+      renderer.setViewport(0, 0, width, stripHeight);
+      renderer.setScissor(0, 0, width, stripHeight);
+      renderer.clear();
+    }
+    renderer.setScissorTest(false);
   }
 
   requestAnimationFrame(frame);

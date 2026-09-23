@@ -22,6 +22,9 @@ const SCREEN_Z = -1.688;
 const PANEL_W = 0.96;
 const PANEL_H = 0.864;
 
+/** Where the picture is, for the portrait layout's close-up camera. */
+export const SCREEN = { x: 0, y: 0.86, z: SCREEN_Z, width: PANEL_W, height: PANEL_H };
+
 function buildLut(mode) {
   // Two tables: ordinary rows and the darker scanline rows.
   const bright = new Uint8Array(256 * 3);

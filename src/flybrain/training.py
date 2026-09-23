@@ -20,9 +20,10 @@ so far. Continued training can wander; the brain you watch cannot get worse.
 from __future__ import annotations
 
 import csv
+import statistics
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,7 @@ import numpy as np
 from .config import POOL_NAMES, Config, furthest_map, map_name, map_progress
 from .emulator import Emulator
 from .loop import Fly, require_rom
+from .milestones import LABELS, MILESTONE_NAMES, JourneyLog, MilestoneRecorder, read_tick_offset, write_tick_offset
 from .mushroom_body import MushroomBody
 from .reward import PARTS, has_control
 
@@ -61,6 +63,8 @@ CSV_FIELDS = (
     "decision",
     "ticks_per_second",
     "seed",
+    # The tick of the episode each milestone first landed in, blank if never.
+    *(f"ms_{name}" for name in MILESTONE_NAMES),
 )
 
 
@@ -94,6 +98,8 @@ class EpisodeResult:
     incumbent_score: float | None = None
     margin: float | None = None
     decision: str = ""
+    # Milestone name -> the tick of this episode it first landed on.
+    milestones: dict[str, int] = field(default_factory=dict)
 
     def row(self) -> dict:
         row = {
@@ -120,6 +126,7 @@ class EpisodeResult:
         }
         row.update({f"reward_{name}": round(self.parts[name], 3) for name in PARTS})
         row.update({f"press_{name}": self.presses[name] for name in POOL_NAMES})
+        row.update({f"ms_{name}": self.milestones.get(name, "") for name in MILESTONE_NAMES})
         return row
 
     def line(self) -> str:
@@ -143,12 +150,24 @@ def run_episode(
     kind: str = "train",
     state_path: Path | None = None,
     observers: Iterable[object] = (),
+    clock: int | None = None,
+    recorder: MilestoneRecorder | None = None,
 ) -> EpisodeResult:
-    """One episode from the start state. Returns its row."""
+    """One episode from the start state. Returns its row.
+
+    `clock` is the game tick the start state was taken at (its sidecar's, by
+    default), so milestones carry honest game time. A `recorder` keeps the
+    replay buffer and writes the journey log."""
     if state_path is not None:
         fly.emulator.load_state(state_path)
-    fly.reset(seed=seed)
+        if clock is None:
+            clock = read_tick_offset(state_path)
+    fly.reset(seed=seed, clock=clock or 0)
     fly.mushroom.learning = learning
+    if recorder is not None:
+        recorder.kind = "train" if kind == "train" else "eval"
+        recorder.begin(fly, 0)
+    landed: dict[str, int] = {}
     lr_actor = fly.mushroom.lr_actor if learning else 0.0
     lr_critic = fly.mushroom.lr_critic if learning else 0.0
     watchers = list(observers)
@@ -162,8 +181,12 @@ def run_episode(
         state = fly.tick(step)
         deltas[step - 1] = state.dopamine
         done = step
+        for name in state.milestones:
+            landed[name] = step
         for watcher in watchers:
             watcher(state)
+        if recorder is not None:
+            recorder(fly, state)
     elapsed = max(time.perf_counter() - started, 1e-9)
     fly.motor.release_all()
 
@@ -190,6 +213,7 @@ def run_episode(
         seed=seed,
         lr_actor=lr_actor,
         lr_critic=lr_critic,
+        milestones=landed,
     )
 
 
@@ -235,7 +259,10 @@ def make_start_state(cfg: Config, target: Path, max_ticks: int = 400_000) -> Pat
         for _ in range(8):
             emulator.tick()
         emulator.save_state(target)
-        print(f"start state written: {target} (after {step} ticks from cold boot)", flush=True)
+        # The state's own place on the game clock, so a run from it counts
+        # game time from the cold boot and not from zero.
+        write_tick_offset(target, step + 8, note="ticks from cold boot, written by make_start_state")
+        print(f"start state written: {target} (after {step} ticks from cold boot, {step + 8} with the release)", flush=True)
     finally:
         emulator.close()
     return target
@@ -514,15 +541,27 @@ class EmulatorTrainer(Trainer):
     """The Trainer on the real game: one emulator, one Fly, the start state
     reloaded every episode."""
 
-    def __init__(self, cfg: Config, fly: Fly, state_path: Path, **kwargs) -> None:
+    def __init__(
+        self, cfg: Config, fly: Fly, state_path: Path, recorder: MilestoneRecorder | None = None, **kwargs
+    ) -> None:
         super().__init__(cfg, fly.mushroom, **kwargs)
         self.fly = fly
         self.state_path = Path(state_path)
+        self.clock = read_tick_offset(self.state_path) or 0
+        self.recorder = recorder
 
     def train_episode(self, episode: int, ticks: int, seed: int) -> EpisodeResult:
         self.fly.mushroom = self.mushroom
         return run_episode(
-            self.fly, ticks, seed, learning=True, episode=episode, kind="train", state_path=self.state_path
+            self.fly,
+            ticks,
+            seed,
+            learning=True,
+            episode=episode,
+            kind="train",
+            state_path=self.state_path,
+            clock=self.clock,
+            recorder=self.recorder,
         )
 
     def eval_episode(self, episode: int, seed: int) -> EpisodeResult:
@@ -535,6 +574,8 @@ class EmulatorTrainer(Trainer):
             episode=episode,
             kind="block",
             state_path=self.state_path,
+            clock=self.clock,
+            recorder=self.recorder,
         )
 
 
@@ -551,8 +592,12 @@ def train(
     resume: bool = False,
     eval_every: int | None = None,
     eval_block: int | None = None,
+    milestones_dir: Path | None = None,
 ) -> list[EpisodeResult]:
     """The training run. Returns every episode result, blocks included.
+
+    `milestones_dir` (train.py passes `milestones/`) records the journey log
+    and writes milestone replays; None records nothing.
 
     `out` is the training state (default `cfg.training_state_path`), `best`
     the best brain (default `cfg.best_brain_path`). `eval_every=0` or
@@ -578,6 +623,8 @@ def train(
     log = CsvLog(log_path)
     emulator = Emulator(rom, headless=True, uncapped=True, cfg=cfg)
     fly = Fly(cfg, emulator)
+    fly.brain_label = out.name
+    recorder = _recorder(cfg, milestones_dir, "train")
     if resume:
         fly.mushroom.load(out)
         print(
@@ -590,6 +637,7 @@ def train(
         cfg,
         fly,
         state_path,
+        recorder=recorder,
         out=out,
         best=best,
         log=log,
@@ -626,6 +674,7 @@ def evaluate(
     base_seed: int = 90_000,
     label: str = "eval",
     log_path: Path | None = None,
+    milestones_dir: Path | None = None,
 ) -> list[EpisodeResult]:
     """The experiment's evaluation block: N episodes with learning OFF, same
     seeds whichever brain is loaded, so naive and trained are comparable.
@@ -636,6 +685,8 @@ def evaluate(
     rom = require_rom(cfg)
     emulator = Emulator(rom, headless=True, uncapped=True, cfg=cfg)
     fly = Fly(cfg, emulator)
+    fly.brain_label = "" if brain_path is None else Path(brain_path).name
+    recorder = _recorder(cfg, milestones_dir, "eval")
     if brain_path is not None:
         fly.mushroom.load(brain_path)
         if fly.mushroom.score is not None:
@@ -654,6 +705,7 @@ def evaluate(
                 episode=index + 1,
                 kind=label,
                 state_path=state_path,
+                recorder=recorder,
             )
             results.append(result)
             if log is not None:
@@ -688,3 +740,47 @@ def learning_curve(results: Iterable[EpisodeResult], bucket: int = 10) -> list[d
             }
         )
     return rows
+
+
+def _recorder(cfg: Config, folder: Path | None, kind: str) -> MilestoneRecorder | None:
+    if folder is None:
+        return None
+    folder = Path(folder)
+    return MilestoneRecorder(cfg, folder, kind, JourneyLog(folder / "journey.json"))
+
+
+def milestone_table(path: Path, bucket: int = 10) -> list[dict]:
+    """From a training CSV: per `bucket` training episodes, for each
+    milestone, how many episodes reached it and the median tick they did."""
+    with Path(path).open(newline="", encoding="utf-8") as handle:
+        rows = [row for row in csv.DictReader(handle) if row.get("kind") == "train"]
+    table = []
+    for start in range(0, len(rows), bucket):
+        chunk = rows[start : start + bucket]
+        line = {"episodes": f"{chunk[0]['episode']}-{chunk[-1]['episode']}", "n": len(chunk), "milestones": {}}
+        for name in MILESTONE_NAMES:
+            ticks = [int(row[f"ms_{name}"]) for row in chunk if (row.get(f"ms_{name}") or "").strip()]
+            line["milestones"][name] = (len(ticks), statistics.median(ticks) if ticks else None)
+        table.append(line)
+    return table
+
+
+def print_milestone_table(path: Path, bucket: int = 10, say: Callable[[str], None] = print) -> None:
+    table = milestone_table(path, bucket)
+    if not table:
+        say(f"{path}: no training rows with milestone columns")
+        return
+    reached = [name for name in MILESTONE_NAMES if any(line["milestones"][name][0] for line in table)]
+    if not reached:
+        say(f"{path}: no milestone was reached in any training episode")
+        return
+    say(f"median ticks into the episode to each milestone, by {bucket}-episode bucket (reached/n in brackets)")
+    width = 14
+    say(f"{'episodes':>11s}  " + "".join(f"{LABELS[name][:width]:>{width + 2}s}" for name in reached))
+    for line in table:
+        cells = []
+        for name in reached:
+            count, median = line["milestones"][name]
+            cell = "-" if median is None else f"{median:.0f}"
+            cells.append(f"{cell + f' ({count}/{line['n']})':>{width + 2}s}")
+        say(f"{line['episodes']:>11s}  " + "".join(cells))

@@ -10,7 +10,7 @@
  * restarted.
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** First byte of a binary message: a raw 160x144 grayscale video frame. */
 export const VIDEO_MESSAGE = 1;
@@ -18,8 +18,8 @@ export const VIDEO_MESSAGE = 1;
 /**
  * @param {string|ArrayBuffer|Uint8Array} data one websocket message
  * @returns {{kind:string}} one of
- *   {kind:'hello', hello}  {kind:'state', state}  {kind:'video', pixels}
- *   {kind:'unknown', type} {kind:'error', reason}
+ *   {kind:'hello', hello}  {kind:'state', state}  {kind:'status', status}
+ *   {kind:'video', pixels} {kind:'unknown', type} {kind:'error', reason}
  */
 export function decodeMessage(data) {
   if (typeof data === 'string') {
@@ -34,6 +34,7 @@ export function decodeMessage(data) {
     }
     if (parsed.type === 'hello') return { kind: 'hello', hello: parsed };
     if (parsed.type === 'state') return { kind: 'state', state: parsed };
+    if (parsed.type === 'status') return { kind: 'status', status: parsed };
     return { kind: 'unknown', type: parsed.type === undefined ? null : parsed.type };
   }
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -63,7 +64,9 @@ export function unpackBits(encoded, count) {
 
 export class Feed {
   /**
-   * @param {object} handlers {onHello, onState, onVideo, onStatus}
+   * @param {object} handlers {onHello, onState, onVideo, onStatus, onRunStatus}
+   *   onStatus is the connection (connecting / connected / disconnected);
+   *   onRunStatus is the server's `status` message (paused, saved_ago).
    */
   constructor(handlers = {}) {
     this.handlers = handlers;
@@ -71,7 +74,7 @@ export class Feed {
     this.status = 'connecting';
     this.closed = false;
     this.retryIn = 500;
-    this.counts = { hello: 0, state: 0, video: 0, bad: 0 };
+    this.counts = { hello: 0, state: 0, status: 0, video: 0, bad: 0, sent: 0 };
   }
 
   get url() {
@@ -105,6 +108,22 @@ export class Feed {
     if (this.socket) this.socket.close();
   }
 
+  /**
+   * One command to the run: 'save' or 'pause'. The server ignores anything
+   * else. Returns false when there is no open socket to send it on.
+   */
+  command(name) {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== 1) return false;
+    try {
+      socket.send(JSON.stringify({ cmd: name }));
+      this.counts.sent += 1;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   _message(data) {
     const message = decodeMessage(data);
     if (message.kind === 'hello') {
@@ -113,6 +132,9 @@ export class Feed {
     } else if (message.kind === 'state') {
       this.counts.state += 1;
       this.handlers.onState?.(message.state);
+    } else if (message.kind === 'status') {
+      this.counts.status += 1;
+      this.handlers.onRunStatus?.(message.status);
     } else if (message.kind === 'video') {
       this.counts.video += 1;
       this.handlers.onVideo?.(message.pixels);

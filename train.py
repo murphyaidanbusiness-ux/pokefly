@@ -15,7 +15,15 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from flybrain.config import Config  # noqa: E402
-from flybrain.training import evaluate, learning_curve, make_start_state, train  # noqa: E402
+from flybrain.training import (  # noqa: E402
+    evaluate,
+    learning_curve,
+    make_start_state,
+    print_milestone_table,
+    train,
+)
+
+MILESTONES = ROOT / "milestones"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -44,12 +52,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--evaluate-naive", action="store_true", help="skip training: evaluate the untrained fly")
     parser.add_argument("--eval-episodes", type=int, default=10)
     parser.add_argument("--eval-seed", type=int, default=90_000)
+    parser.add_argument(
+        "--milestones",
+        type=Path,
+        nargs="?",
+        const=ROOT / "runs" / "train.csv",
+        default=None,
+        metavar="CSV",
+        help="print median ticks to each milestone by 10-episode bucket from a training CSV "
+        "(default runs/train.csv), and stop",
+    )
+    parser.add_argument("--no-record", action="store_true", help="do not write milestones/journey.json or replays")
     return parser.parse_args(argv)
 
 
 def main() -> None:
     args = parse_args()
+    if args.milestones is not None:
+        print_milestone_table(args.milestones)
+        return
     cfg = replace(Config(), rom_path=args.rom, seed=args.seed, n_neurons=args.neurons, headless=True, uncapped=True)
+    milestones_dir = None if args.no_record else MILESTONES
 
     if args.make_start_state:
         make_start_state(cfg, args.state)
@@ -67,6 +90,7 @@ def main() -> None:
             base_seed=args.eval_seed,
             label=label,
             log_path=args.eval_log,
+            milestones_dir=milestones_dir,
         )
         left = sum(r.left_house for r in results)
         mean = sum(r.reward for r in results) / max(len(results), 1)
@@ -86,6 +110,7 @@ def main() -> None:
         resume=args.resume,
         eval_every=args.eval_every,
         eval_block=args.eval_block,
+        milestones_dir=milestones_dir,
     )
     print("\nlearning curve (training episodes only)", flush=True)
     for row in learning_curve(results):

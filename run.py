@@ -1,7 +1,16 @@
 """Entrypoint. `python run.py` with no arguments finds the ROM next to itself.
 
-It also picks up `brains/latest.npz` when that exists, so the fly you watch is
-the trained one unless you ask for `--naive`.
+With no arguments it is a JOURNEY: one long save file in `saves/journey/`.
+The first time, it starts from `states/bedroom.state` with a copy of
+`brains/latest.npz` as the journey's own brain; every time after, it carries
+on from the save (game, neurons, brain, milestone clock). It learns while you
+watch, into the journey brain and never into `brains/latest.npz`, autosaves
+every few minutes and always on the way out.
+
+Any flag that chooses its own brain or start point (`--brain`, `--naive`,
+`--load-state`, `--start-state`, `--save-brain`, `--connectome`, `--seed`,
+`--neurons`, `--replay`) or `--no-journey` is the old behaviour: one run,
+nothing saved unless asked.
 
 No install step: src/ goes on sys.path here.
 """
@@ -9,6 +18,7 @@ No install step: src/ goes on sys.path here.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import webbrowser
 from dataclasses import replace
@@ -19,10 +29,16 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from flybrain.config import Config  # noqa: E402
 from flybrain.hud import Hud, PlainLog  # noqa: E402
+from flybrain.journey import JourneySave, JourneySession  # noqa: E402
 from flybrain.loop import LoopOptions, run_loop  # noqa: E402
+from flybrain.milestones import LABELS, JourneyLog, MilestoneRecorder, game_time  # noqa: E402
+from flybrain.snapshot import FlySnapshot  # noqa: E402
 
 BEST_BRAIN = ROOT / "brains" / "latest.npz"
 JOURNEY_BRAIN = ROOT / "brains" / "journey.npz"
+BEDROOM = ROOT / "states" / "bedroom.state"
+MILESTONES = ROOT / "milestones"
+JOURNEY_DIR = ROOT / "saves" / "journey"
 
 
 def brain_save_target(brain: Path | None, best: Path = BEST_BRAIN, journey: Path = JOURNEY_BRAIN) -> Path:
@@ -33,6 +49,26 @@ def brain_save_target(brain: Path | None, best: Path = BEST_BRAIN, journey: Path
     if brain is None or Path(brain).resolve() == Path(best).resolve():
         return Path(journey)
     return Path(brain)
+
+
+def journey_off_because(args: argparse.Namespace) -> str | None:
+    """Why this run is not a journey, or None when it is."""
+    if args.no_journey:
+        return "--no-journey"
+    for flag, chosen in (
+        ("--replay", args.replay is not None),
+        ("--brain", args.brain is not None),
+        ("--naive", args.naive),
+        ("--load-state", args.load_state is not None),
+        ("--start-state", args.start_state),
+        ("--save-brain", args.save_brain),
+        ("--connectome", args.connectome is not None),
+        ("--seed", args.seed != 0),
+        ("--neurons", args.neurons != Config().n_neurons),
+    ):
+        if chosen:
+            return flag
+    return None
 
 
 def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argparse.Namespace]:
@@ -62,11 +98,31 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
     parser.add_argument("--couch-port", type=int, default=Config().couch_port, help="port for the scene server")
     parser.add_argument("--no-browser", action="store_true", help="with --couch, do not open a browser tab")
     parser.add_argument("--window", action="store_true", help="with --couch, keep the SDL2 window open too")
+    parser.add_argument("--portrait", action="store_true", help="open the couch scene in the 9:16 layout (implies --couch)")
+    parser.add_argument(
+        "--replay",
+        metavar="NAME",
+        default=None,
+        help="replay a milestone from milestones/NAME/ (implies --couch unless --headless)",
+    )
+    parser.add_argument("--no-journey", action="store_true", help="one run, no journey save")
+    parser.add_argument("--fresh", action="store_true", help="discard the journey save and start a new journey")
+    parser.add_argument("--yes", action="store_true", help="with --fresh, do not ask")
+    parser.add_argument("--no-learn", action="store_true", help="journey mode: freeze the journey brain")
     args = parser.parse_args(argv)
+
+    if args.portrait:
+        args.couch = True
+    if args.replay is not None and not args.headless:
+        args.couch = True
+    args.journey_off = journey_off_because(args)
+    args.journey = args.journey_off is None
+    if args.fresh and not args.journey:
+        parser.error(f"--fresh starts a new journey, and {args.journey_off} means this run is not one")
 
     load_state = args.load_state
     if args.start_state and load_state is None:
-        load_state = ROOT / "states" / "bedroom.state"
+        load_state = BEDROOM
 
     # The scene IS the window, so --couch is headless unless you ask for both.
     headless = args.headless or (args.couch and not args.window)
@@ -93,8 +149,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
         if not brain_path.is_file():
             parser.error(f"no brain file at {brain_path}")
     else:
-        default = ROOT / "brains" / "latest.npz"
-        brain_path = default if default.is_file() else None
+        brain_path = BEST_BRAIN if BEST_BRAIN.is_file() else None
     # PyBoy's null window runs as fast as the CPU allows (measured here: about
     # 1,400 ticks/s), so a watched headless run has to pace itself.
     pace = cfg.couch_pace_hz if (args.couch and not args.uncapped) else 0.0
@@ -108,35 +163,195 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
     return cfg, options, args
 
 
-def run_with_couch(cfg: Config, options: LoopOptions, args: argparse.Namespace, display: object) -> None:
+# ------------------------------------------------------------------ journey ---
+
+
+def confirm_fresh(store: JourneySave, yes: bool, stdin=None, ask=input) -> bool:
+    """Discard the journey save for `--fresh`. True when there is nothing in
+    the way any more. A save is only thrown away on `--yes` or a `y` typed at
+    a real terminal: on a pipe with no `--yes` it refuses."""
+    stdin = sys.stdin if stdin is None else stdin
+    if not store.folder.exists():
+        return True
+    manifest = store.manifest()
+    what = (
+        f"the journey save in {store.folder} ({manifest['game_time']} of game time, saved {manifest['saved_at']})"
+        if manifest
+        else f"everything in {store.folder}"
+    )
+    if not yes:
+        if not (hasattr(stdin, "isatty") and stdin.isatty()):
+            print(f"--fresh would discard {what}; not on a pipe without --yes. Nothing was touched.", flush=True)
+            return False
+        try:
+            answer = ask(f"--fresh discards {what}. Type y to discard it: ").strip().lower()
+        except (EOFError, OSError):
+            # Windows calls the NUL device a terminal; reading it ends at once.
+            answer = ""
+            print()
+        if answer != "y":
+            print("kept the journey save; nothing was touched.", flush=True)
+            return False
+    store.discard()
+    print(f"discarded {what}", flush=True)
+    return True
+
+
+def set_up_journey(cfg: Config, options: LoopOptions, args: argparse.Namespace, store: JourneySave) -> Config:
+    """Continue the journey save, or start a new journey from the bedroom with
+    a copy of the best brain. Returns the config to run with."""
+    options.hourly_schedule = True
+    learn = not args.no_learn
+    if store.exists():
+        snapshot, manifest = store.load()
+        options.start = snapshot
+        options.learn = learn
+        options.brain_path = None
+        print(
+            f"continuing the journey: {manifest['game_time']} of game time, brain at "
+            f"{manifest['episodes_trained']} episodes, saved {manifest['saved_at']} "
+            f"({'learning' if learn else 'learning frozen'}; saves in {store.folder})",
+            flush=True,
+        )
+        return replace(cfg, load_state=None)
+
+    store.folder.mkdir(parents=True, exist_ok=True)
+    brain = store.brain_path()
+    if BEST_BRAIN.is_file():
+        shutil.copyfile(BEST_BRAIN, brain)
+        options.brain_path = brain
+        options.brain_label = f"journey (copy of {BEST_BRAIN.name})"
+        source = f"a copy of {BEST_BRAIN.relative_to(ROOT)}"
+    else:
+        options.brain_path = None
+        options.brain_label = "journey (naive)"
+        source = "a naive brain (no brains/latest.npz)"
+    options.learn = learn
+    print(
+        f"new journey from {BEDROOM.relative_to(ROOT)} with {source} "
+        f"({'learning' if learn else 'learning frozen'}; saves in {store.folder})",
+        flush=True,
+    )
+    return replace(cfg, load_state=BEDROOM)
+
+
+# ------------------------------------------------------------------- replay ---
+
+
+class ReplayCheck:
+    """Says whether the milestone landed on the tick it was recorded at."""
+
+    def __init__(self, name: str, landed_tick: int) -> None:
+        self.name, self.landed_tick = name, int(landed_tick)
+        self.seen: int | None = None
+
+    def __call__(self, tick) -> None:
+        if self.seen is None and self.name in tick.milestones:
+            self.seen = tick.game_tick
+            same = self.seen == self.landed_tick
+            print(
+                f"replay: {LABELS.get(self.name, self.name)} landed at {game_time(self.seen)} (tick {self.seen}), "
+                + ("exactly as recorded" if same else f"but it was recorded at tick {self.landed_tick}: DIVERGED"),
+                flush=True,
+            )
+
+    def close(self) -> None:
+        if self.seen is None:
+            print(
+                f"replay: {LABELS.get(self.name, self.name)} did not land in this run "
+                f"(recorded at {game_time(self.landed_tick)}, tick {self.landed_tick})",
+                flush=True,
+            )
+
+
+def set_up_replay(cfg: Config, options: LoopOptions, name: str) -> tuple[Config, ReplayCheck]:
+    folder = MILESTONES / name
+    if not FlySnapshot.exists(folder):
+        known = sorted(p.name for p in MILESTONES.iterdir() if FlySnapshot.exists(p)) if MILESTONES.is_dir() else []
+        print(
+            f"no replay at {folder}. Replays there: {', '.join(known) or 'none yet'}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    snapshot = FlySnapshot.load(folder)
+    meta = snapshot.meta
+    landed = int(meta["landed_tick"])
+    options.start = snapshot
+    options.learn = None  # exactly what the recorded run was doing
+    options.brain_path = None
+    print(
+        f"replay: {meta.get('label', name)}, recorded {meta.get('date', '?')} in a {meta.get('kind', '?')} run "
+        f"with {meta.get('brain') or 'no brain'} at {meta.get('episodes_trained', '?')} episodes. "
+        f"Starts at {game_time(meta['start_tick'])} of game time, {game_time(landed - meta['start_tick'])} "
+        f"before it lands at {game_time(landed)}. Fast-forwarding {snapshot.emulator.ticks} ticks of "
+        "recorded input from the savestate first.",
+        flush=True,
+    )
+    return replace(cfg, load_state=None), ReplayCheck(name, landed)
+
+
+# --------------------------------------------------------------------- main ---
+
+
+def run_with_couch(cfg: Config, options: LoopOptions, args: argparse.Namespace, observers: list, extras=None,
+                   replay_target=None) -> None:
     """The same loop, with the scene server and its observer around it."""
     from flybrain.couch import CouchServer
     from flybrain.couch_observer import CouchObserver
 
     server = CouchServer(cfg, port=args.couch_port).start()
     watcher = CouchObserver(cfg, server.hub)
-    print(f"couch: {server.url}   scene files from {server.root}", flush=True)
+    watcher.extras = extras
+    watcher.replay_target = replay_target
+    options.commands.append(server.hub.take_commands)
+    url = server.url + ("?portrait=1" if args.portrait else "")
+    print(f"couch: {url}   scene files from {server.root}", flush=True)
     print("couch: Ctrl+C stops the run and releases the port.", flush=True)
     if not args.no_browser:
-        webbrowser.open(server.url)
+        webbrowser.open(url)
     try:
-        run_loop(cfg, observers=(display, watcher), options=options)
+        run_loop(cfg, observers=(*observers, watcher), options=options)
     finally:
         server.stop()
         print(
             f"couch: {watcher.states_sent} state and {watcher.videos_sent} video messages published, "
-            f"{server.hub.messages_sent} written to browsers, {server.hub.clients_dropped} clients dropped",
+            f"{server.hub.messages_sent} written to browsers, {server.hub.clients_dropped} clients dropped, "
+            f"{server.hub.commands_received} commands from the page",
             flush=True,
         )
 
 
 def main() -> None:
     cfg, options, args = parse_args()
-    display = Hud(cfg) if cfg.hud else PlainLog(cfg)
-    if args.couch:
-        run_with_couch(cfg, options, args, display)
+    extras = None
+    replay_target = None
+    observers: list = []
+
+    if args.replay is not None:
+        cfg, check = set_up_replay(cfg, options, args.replay)
+        observers.append(check)
+        replay_target = (check.name, check.landed_tick)
     else:
-        run_loop(cfg, observers=(display,), options=options)
+        options.recorder = MilestoneRecorder(cfg, MILESTONES, "watch", JourneyLog(MILESTONES / "journey.json"))
+        if args.journey:
+            store = JourneySave(JOURNEY_DIR)
+            if args.fresh and not confirm_fresh(store, args.yes):
+                raise SystemExit(2)
+            cfg = set_up_journey(cfg, options, args, store)
+            session = JourneySession(store, cfg)
+            options.journey = session
+            extras = session.status
+        else:
+            print(f"journey off ({args.journey_off}): one run, nothing saved unless asked", flush=True)
+
+    display = Hud(cfg) if cfg.hud else PlainLog(cfg)
+    if extras is not None and hasattr(display, "status"):
+        display.status = extras
+    observers.insert(0, display)
+    if args.couch:
+        run_with_couch(cfg, options, args, observers, extras=extras, replay_target=replay_target)
+    else:
+        run_loop(cfg, observers=tuple(observers), options=options)
 
 
 if __name__ == "__main__":

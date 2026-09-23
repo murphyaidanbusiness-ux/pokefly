@@ -452,3 +452,136 @@ class WsClient:
             self.sock.close()
         except OSError:
             pass
+
+
+# ------------------------------------------------- commands from the page ---
+
+
+def masked_frame(payload: bytes, opcode: int = OP_TEXT) -> bytes:
+    """A client-to-server frame, masked as a browser must send it."""
+    mask = b"\x11\x22\x33\x44"
+    size = len(payload)
+    head = bytearray((0x80 | opcode,))
+    if size < 126:
+        head.append(0x80 | size)
+    elif size <= 0xFFFF:
+        head.append(0x80 | 126)
+        head += size.to_bytes(2, "big")
+    else:
+        head.append(0x80 | 127)
+        head += size.to_bytes(8, "big")
+    return bytes(head) + mask + bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+
+
+def test_the_server_takes_save_and_pause_from_the_page_and_ignores_the_rest(server):
+    from flybrain.couch import parse_command
+
+    client = WsClient(server.host, server.port)
+    assert wait_for(lambda: server.hub.clients == 1)
+    for frame in (
+        masked_frame(b'{"cmd": "save"}'),
+        masked_frame(b"not json at all"),
+        masked_frame(b'{"cmd": "format c:"}'),
+        masked_frame(b'["save"]'),
+        masked_frame(b'{"cmd": ["save"]}'),
+        masked_frame(bytes([0xFF, 0xFE, 0x00])),
+        masked_frame(b'{"cmd": "save"}', OP_BINARY),
+        masked_frame(b'{"cmd": "pause", "extra": 1}'),
+        masked_frame(b"[" * 200 + b"]" * 200),
+    ):
+        client.sock.sendall(frame)
+    assert wait_for(lambda: server.hub.commands_received == 2 and server.hub.frames_ignored == 6)
+    assert server.hub.take_commands() == ["save", "pause"]
+    assert server.hub.take_commands() == [], "each command is handed over once"
+    client.close()
+
+    assert parse_command(b'{"cmd": "save"}') == "save"
+    assert parse_command(b'{"cmd": "' + b"x" * 400 + b'"}') is None
+
+
+def test_a_flood_of_commands_cannot_grow_the_queue_or_reach_the_loop_late(server):
+    from flybrain.couch import COMMAND_QUEUE
+
+    client = WsClient(server.host, server.port)
+    assert wait_for(lambda: server.hub.clients == 1)
+    client.sock.sendall(masked_frame(b'{"cmd": "save"}') * 200)
+    assert wait_for(lambda: server.hub.commands_received == 200)
+    assert len(server.hub.take_commands()) == COMMAND_QUEUE
+    client.close()
+
+
+def test_an_oversized_client_frame_drops_that_client_and_the_feed_goes_on(server):
+    watcher = CouchObserver(server.cfg, server.hub)
+    bad = WsClient(server.host, server.port)
+    assert wait_for(lambda: server.hub.clients == 1)
+    bad.sock.sendall(masked_frame(b"x" * 70_000))
+    assert wait_for(lambda: server.hub.clients == 0), "the reader gave up on it and the writer followed"
+    bad.close()
+
+    good = WsClient(server.host, server.port)
+    watcher(a_tick(step=3))
+    kinds = set()
+    for _ in range(3):
+        opcode, body = good.recv()
+        kinds.add("video" if opcode == OP_BINARY else json.loads(body)["type"])
+    good.close()
+    assert kinds == {"hello", "state", "video"}
+
+
+# ---------------------------------------------------- the journey fields ---
+
+
+def test_a_milestone_is_latched_until_the_next_state_message():
+    cfg = replace(Config(), couch_state_hz=0.5, couch_video_fps=0.5)
+    hub = Hub()
+    watcher = CouchObserver(cfg, hub)
+    watcher(a_tick(step=1))
+    landed = replace(a_tick(step=2), game_tick=15_120, milestone="left_house", milestones=("left_house",),
+                     since_milestone=0, last_milestone="left_house", brain="latest.npz", brain_episodes=100)
+    watcher(landed)  # not sent: the gate is closed
+    watcher.state_ticker.reset()
+    watcher(replace(landed, step=3, game_tick=15_121, milestone=None, milestones=(), since_milestone=1))
+    state = state_in(hub)
+    assert [m["name"] for m in state["milestones"]] == ["left_house"]
+    assert state["milestones"][0]["game_time"] == "4:12" and state["milestones"][0]["label"] == "left the house"
+    assert state["last_milestone"]["name"] == "left_house"
+    assert state["game_time"] == "4:12" and state["generation"] == 100 and state["brain_file"] == "latest.npz"
+    watcher.state_ticker.reset()
+    watcher(replace(landed, step=4, game_tick=15_122, milestone=None, milestones=(), since_milestone=2))
+    again = state_in(hub)
+    assert again["milestones"] == [], "sent exactly once"
+    assert again["last_milestone"]["name"] == "left_house" and again["since_milestone"] == 2
+
+
+def test_the_replay_countdown_and_the_journey_status_ride_on_the_state():
+    hub = Hub()
+    watcher = CouchObserver(fast_config(), hub)
+    watcher.replay_target = ("left_house", 15_120)
+    watcher.extras = lambda: {"journey": True, "saved_ago": 12.0}
+    watcher(replace(a_tick(step=1), game_tick=15_120 - 7 * 60))
+    state = state_in(hub)
+    assert state["countdown"]["text"] == "left the house in 0:07" and state["countdown"]["ticks"] == 420
+    assert state["saved_ago"] == 12.0 and state["journey"] is True and state["paused"] is False
+    watcher.state_ticker.reset()
+    watcher(replace(a_tick(step=2), game_tick=15_121))
+    assert state_in(hub)["countdown"] is None, "no countdown once it has landed"
+
+
+def test_pausing_publishes_a_status_message():
+    hub = Hub()
+    watcher = CouchObserver(fast_config(), hub)
+    watcher.extras = lambda: {"saved_ago": 3.0}
+    watcher.on_pause(True)
+    status = json.loads(payload_of(hub.latest("status")))
+    assert status == {"type": "status", "paused": True, "saved_ago": 3.0}
+
+
+def test_the_protocol_document_matches_the_version_and_the_new_messages():
+    from flybrain.couch import PROTOCOL_VERSION
+
+    text = (SCENE / "PROTOCOL.md").read_text(encoding="utf-8")
+    assert f"`PROTOCOL_VERSION` is `{PROTOCOL_VERSION}`" in text
+    for word in ('"cmd": "save"', '"cmd": "pause"', "### `status`", "countdown", "last_milestone", "saved_ago"):
+        assert word in text, word
+    net = (SCENE / "js" / "net.js").read_text(encoding="utf-8")
+    assert f"export const PROTOCOL_VERSION = {PROTOCOL_VERSION};" in net

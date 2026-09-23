@@ -48,6 +48,26 @@ class Brain:
         self._rate = 0.0
         self.steps = 0
 
+    # -- snapshots ---------------------------------------------------------
+
+    def get_state(self) -> dict:
+        """Everything that decides the next step, copied. `_input` is not in
+        it: every step fills it from zero."""
+        return {
+            "v": self.v.copy(),
+            "refractory": self.refractory.copy(),
+            "spikes": self.spikes.copy(),
+            "rate": self._rate,
+            "steps": self.steps,
+        }
+
+    def set_state(self, state: dict) -> None:
+        self.v = np.array(state["v"], dtype=np.float32)
+        self.refractory = np.array(state["refractory"], dtype=np.int32)
+        self.spikes = np.array(state["spikes"], dtype=bool)
+        self._rate = float(state["rate"])
+        self.steps = int(state["steps"])
+
     @property
     def firing_rate(self) -> float:
         """Exponentially smoothed fraction of neurons spiking per step."""

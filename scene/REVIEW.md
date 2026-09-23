@@ -74,3 +74,78 @@ empty and the scene is still wrong, the browser console has the rest.
   orbit control is ours, in `scene/js/orbit.js`, because it is eighty lines and
   vendoring the example version would have needed an import map.
 - No build step and no npm. The stdlib server serves the files as they are.
+
+## Round two: portrait, the milestone strip, the flash, Save and Pause
+
+**I have not seen any of this either.** Same caveat as above: the JS was
+written against the vendored r186 (`setViewport`, `setScissor`,
+`setScissorTest`, `clear` all exist there and take CSS pixels from the bottom
+left), passes `node --check`, and the Python side of every message is tested.
+Nothing about how it looks has been checked.
+
+### Run it
+
+```powershell
+cd "C:\Users\aidan murphy\fly-brain-pokemon"
+# a replay, portrait, with the countdown and the flash (needs milestones\left_house\ from a recorded run)
+& .\.venv\Scripts\python.exe run.py --replay left_house --portrait
+# the journey, landscape, with the Save button live
+& .\.venv\Scripts\python.exe run.py --couch
+```
+
+For a true 1080x1920 frame, open Chrome DevTools, device toolbar, a custom
+device of 1080 x 1920 at DPR 1, on `http://127.0.0.1:8765/?portrait=1`. A
+second tab without `?portrait=1` stays landscape on the same feed.
+
+### Portrait pass
+
+| look at | what it should be |
+|---|---|
+| the whole window at 1080x1920 | no scrollbars, nothing cut off at the right or bottom edge |
+| the top 45 percent | the CRT picture filling the width, the whole 160x144 picture visible with a thin bezel above and below it, pixels square and legible at phone size. The numbers to move: `PORTRAIT_TV_SHARE` in `theme.js`, the `1.07` margins in `frameTelevision` in `main.js` |
+| the middle band | the fly facing the camera three-quarters on, head and head glow clearly visible, the controller in its front legs clearly visible and not cropped. The camera is `PORTRAIT_FLY` in `theme.js` (eye, look, fov): it was placed by arithmetic, not by eye, so this is the likeliest thing to need moving |
+| the bottom band | the strip, full width: last milestone (big, gold), "at m:ss of game time", a live "+m:ss" since it that counts up at game speed, "generation N" and the brain file; under it one compact line: live/not connected, game time, where, "saved m:ss ago", Save, Pause |
+| no gap or overlap | the fly band should end exactly where the strip begins (the canvas reads the strip's height each frame). If the strip is taller than 30 percent of the window it is clamped and will overlap |
+| keys `2` `3` `4` | the ordinary orbit views, full frame, strip still at the bottom; `1` or `R` back to the composition |
+| sharpness | the canvas draws at the full device pixel ratio in portrait and never lowers it to hold the frame rate (it may still turn shadows off, and the corner note would say so, but the note is hidden in portrait: check the console if the frame rate looks low) |
+| the corner panel | hidden in portrait; `H` does nothing visible there |
+
+### The milestone flash (both layouts)
+
+Watch `run.py --replay left_house --portrait` (or the landscape form without
+`--portrait`). During the replay the strip shows a gold countdown line, "left
+the house in 0:14", counting down in game time. When it reaches zero:
+
+- a gold-bordered banner appears (centre in landscape, over the fly band in
+  portrait): "MILESTONE", the name in large type, "m:ss of game time" under
+  it; it pops in, holds, and fades out over **3 seconds**. Is it readable in
+  that time on a phone-sized recording?
+- the glow inside the fly's head pulses gold three times over about 1.6 s and
+  fades back to its usual colour; the head itself warms up. It should read as a
+  distinct event, not as the ordinary dopamine flash.
+- the countdown line disappears and the strip's "last milestone" becomes
+  "left the house" with its time; the "+m:ss" restarts from zero.
+
+The terminal prints `replay: left the house landed at m:ss (tick N), exactly
+as recorded`; if it says DIVERGED, that is a bug worth a report.
+
+### Save and Pause
+
+| do | expect |
+|---|---|
+| journey mode (`run.py --couch`), click **Save** or press `S` in the page | the strip says "saving..." for a moment, then "saved 0:00 ago", counting up; the terminal prints "journey saved (on request) ..." |
+| click **Pause** or press `P`/`Space` in the page | the game and the fly freeze, the button reads **Resume** with a gold tint, the terminal says "paused"; clicking again resumes. `P` in the terminal and the page button toggle the same pause |
+| Save while paused | saves at once, "saved 0:00 ago" updates while still paused |
+| a replay or `--no-journey` run | no Save button (nothing to save); Pause still works |
+| clicking a button | must not also orbit the camera or type into anything |
+
+### Likeliest to be wrong
+
+1. The portrait fly camera (`PORTRAIT_FLY`): cropped controller, or the fly too
+   small or too far to one side.
+2. The flash position in portrait (`body.portrait #flash { top: 60% }` in
+   `index.html`) landing on the fly's face instead of above it.
+3. Strip font sizes in portrait are in `vh`; at 1920 tall they should be
+   comfortably readable on a phone, but at a small window they get tiny.
+4. Two renders a frame in the portrait composition: if the frame rate drops
+   under 48 the scene turns shadows off, which changes the look.
