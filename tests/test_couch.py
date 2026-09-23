@@ -585,3 +585,16 @@ def test_the_protocol_document_matches_the_version_and_the_new_messages():
         assert word in text, word
     net = (SCENE / "js" / "net.js").read_text(encoding="utf-8")
     assert f"export const PROTOCOL_VERSION = {PROTOCOL_VERSION};" in net
+
+
+def test_a_second_scene_on_the_same_port_is_refused():
+    """Two copies must never share a port: the browser would land on either."""
+    from flybrain.couch import CouchServer
+
+    first = CouchServer(port=0).start()
+    port = first.port
+    try:
+        with pytest.raises(OSError, match="couch-port"):
+            CouchServer(port=port)
+    finally:
+        first.stop()

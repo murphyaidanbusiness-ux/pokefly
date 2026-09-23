@@ -300,7 +300,20 @@ class _Server(ThreadingHTTPServer):
     # A WebSocket handler thread lives as long as its browser tab, so closing
     # the server must not try to join them.
     block_on_close = False
+    # HTTPServer sets SO_REUSEADDR, and on Windows that lets a SECOND copy of
+    # the scene bind the same port while the first is still serving: the
+    # browser then lands on whichever one accepts, and shows the wrong run.
+    # Measured: a two-hour-old watch run and a fresh replay both "listening"
+    # on 8765. Exclusive use makes the second copy fail with the message in
+    # CouchServer.__init__ instead.
+    allow_reuse_address = False
     couch: CouchServer
+
+    def server_bind(self) -> None:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
 
 
 class _Handler(BaseHTTPRequestHandler):
