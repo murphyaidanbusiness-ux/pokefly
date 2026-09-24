@@ -16,8 +16,8 @@
  *                  leg on that side reaches over and pokes that very control.
  *                  The d-pad tilts the way the fly is walking.
  *   head glow      the firing rate of the whole spiking network: the crown
- *                  of the head, the three ocelli on top, and an aura that
- *                  rings the head.
+ *                  of the head and the three ocelli on top light up, and a
+ *                  small light in front of the face warms the pad.
  *   glow colour    dopamine: gold when the last thing that happened was
  *                  better than expected, cold blue when it was worse.
  *   antennae       the same signal again, as posture: perked up and spread,
@@ -626,44 +626,10 @@ export class FlyActor {
     this.eyes = eyes.mesh(this.mat.eyes);
     this.head.add(this.eyes);
 
-    // The glow: the crown (above), the ocelli, and an aura round the whole
-    // head: a shell a little larger than head and eyes that glows only where
-    // it is seen edge on, so it rings the silhouette and leaves the face
-    // clear. A small light warms whatever is near.
-    this.aura = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 24, 16),
-      new THREE.ShaderMaterial({
-        uniforms: { color: { value: new THREE.Color(0xffd27a) }, strength: { value: 0.5 } },
-        vertexShader: `
-          varying vec3 vNormal;
-          varying vec3 vView;
-          void main() {
-            vec4 mv = modelViewMatrix * vec4(position, 1.0);
-            vNormal = normalize(normalMatrix * normal);
-            vView = normalize(-mv.xyz);
-            gl_Position = projectionMatrix * mv;
-          }`,
-        fragmentShader: `
-          uniform vec3 color;
-          uniform float strength;
-          varying vec3 vNormal;
-          varying vec3 vView;
-          void main() {
-            // 0 face on, 1 edge on. Brightest just outside the head's own
-            // outline, fading to nothing at the shell's.
-            float rim = 1.0 - abs(dot(normalize(vNormal), normalize(vView)));
-            float glow = smoothstep(0.22, 0.46, rim) * pow(1.0 - rim, 1.3) * 2.2;
-            gl_FragColor = vec4(color * glow * strength, 1.0);
-          }`,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
-    );
-    this.aura.position.set(0, 0.012, -0.022);
-    this.aura.scale.set(0.21, 0.165, 0.155);
-    this.aura.renderOrder = 4;
-    this.head.add(this.aura);
+    // The glow: the crown (above) and the ocelli light up with the firing
+    // rate, and a small light warms whatever is near. There is no aura round
+    // the head: a rim-lit shell was tried and it read as a helmet.
+    this.glowColor = new THREE.Color(0xffd27a);
     this.brainLight = new THREE.PointLight(0xffd27a, 0.6, 1.2, 2);
     this.brainLight.position.set(0, 0.17, -0.17);
     this.head.add(this.brainLight);
@@ -1274,34 +1240,29 @@ export class FlyActor {
     const r = 1.0 - 0.68 * cold;
     const g = 0.82 - 0.2 * cold + 0.1 * warm;
     const b = 0.48 - 0.4 * warm + 0.55 * cold;
-    const color = this.aura.material.uniforms.color.value;
+    const color = this.glowColor;
     color.setRGB(clamp(r, 0.2, 1), clamp(g, 0.2, 1), clamp(b, 0.1, 1.4));
 
-    let aura = 0.15 + 0.75 * level * pulse + 0.55 * this.flash;
-    let size = 1 + 0.06 * level * pulse + 0.1 * this.flash;
     let light = 0.03 + 0.18 * level + 0.7 * this.flash;
     let crown = 0.03 + 0.4 * level * pulse + 0.9 * this.flash;
 
     // The milestone pulse wins over everything above while it lasts: three
-    // gold beats that fade out, in the glow, its light and the head.
+    // gold beats that fade out, in the crown and its light.
     if (this.gold > 0) {
       const phase = GOLD_SECONDS - this.gold;
       const beat = 0.5 + 0.5 * Math.cos((phase * 3 * Math.PI * 2) / GOLD_SECONDS);
       const k = (this.gold / GOLD_SECONDS) * (0.55 + 0.45 * beat);
       color.setRGB(color.r + (GOLD.r - color.r) * k, color.g + (GOLD.g - color.g) * k, color.b + (GOLD.b - color.b) * k);
       light += 2.0 * k;
-      aura += 1.1 * k;
-      size += 0.25 * k;
       crown += 2.0 * k;
     }
 
-    this.aura.material.uniforms.strength.value = aura;
-    this.aura.scale.set(0.21 * size, 0.165 * size, 0.155 * size);
     this.brainLight.color.copy(color);
     this.brainLight.intensity = light;
     this.mat.head.emissive.copy(color);
     this.mat.head.emissiveIntensity = crown;
-    this.mat.eyes.emissiveIntensity = 0.08 + 0.22 * level;
+    // The eyes are lit by the room and the TV only: no light of their own.
+    this.mat.eyes.emissiveIntensity = 0;
 
     // The TV lights the room, so it lights the reflections too.
     const screen = clamp(this.screen, 0, 1);

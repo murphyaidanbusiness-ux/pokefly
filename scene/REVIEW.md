@@ -31,7 +31,7 @@ empty and the scene is still wrong, the browser console has the rest.
 | the TV as key light | watch a dark room in game, then a bright one | the whole room dims and brightens with the game. This is the thing most worth checking |
 | the fly | key `3` | clearly a fruit fly: big red compound eyes, tan thorax, striped abdomen, two translucent wings, six segmented legs, antennae, a proboscis, sitting upright holding a controller (round four below has the close-up pass) |
 | button presses | key `3`, watch the pad | the pressed control goes down and lights in its own colour, the d-pad tilts the way the fly is walking, the front leg on that side pokes it. This should read without being told |
-| the head glow | any view | a glow on the crown of the head and a ring of light round it that track the firing rate, gold when something went better than expected and cold blue when it went worse |
+| the head glow | any view | a glow on the crown of the head that tracks the firing rate, gold when something went better than expected and cold blue when it went worse. No ring or aura round the head, and the eyes give off no light of their own |
 | antennae | after a new room is entered | they perk up on a big positive dopamine flash and droop on a negative one |
 | the startle | wait for a panic (the HUD counts them) | wings buzz, the fly hops off the cushion, the camera shakes |
 | grooming | when START fires | the front legs come off the pad and rub together |
@@ -263,8 +263,8 @@ colours rather than textures.
 | cue | what it should be now |
 |---|---|
 | a press | the front leg on that side reaches to the very control pressed (the left foot to the d-pad arm, the right foot to A, B or START) and pushes it down; the control lights and goes down; the d-pad tilts. At rest each foot hovers over its side of the pad |
-| head glow | a glow on the crown and the ocelli, and a soft ring of light hugging the outline of the head, faint when the brain is quiet and bright when it is busy. A small light in front of the face warms the pad and front legs with the same colour |
-| gold / blue | the ring and crown go gold on good news and cold blue on bad; the antennae perk up and spread, or droop and splay outward |
+| head glow | a glow on the crown and the ocelli, faint when the brain is quiet and bright when it is busy. A small light in front of the face warms the pad and front legs with the same colour. Nothing rings the head and the eyes do not glow |
+| gold / blue | the crown goes gold on good news and cold blue on bad; the antennae perk up and spread, or droop and splay outward |
 | panic | the wings lift above the back, spread and buzz into two translucent fans; the fly hops; the camera shakes |
 | START | the right foot taps START, then both front feet come up under the face and rub together, then wipe down over the eyes twice while the head tips down, then go back to the pad (about 1.8 s) |
 | battle | the fly scoots forward and tips toward the TV, lifts its abdomen, and tips its head back up to keep its eyes on the screen |
@@ -283,8 +283,8 @@ pass included, fly visible versus hidden:
 | triangles drawn for the fly body, shadow pass included | 15.5k | 51k |
 | triangles drawn, view `1` / portrait | 82k / 112k | 118k / 147k |
 
-The body is five meshes (body with legs and bristles, abdomen, head, eyes,
-aura), two antennae, two wings, and four front-leg pieces; the two wing
+The body is four meshes (body with legs and bristles, abdomen, head, eyes),
+two antennae, two wings, and four front-leg pieces; the two wing
 blurs only draw during a panic. `update` allocates nothing. No light casts a
 shadow except the TV; the small brain light is shadowless, as before. The
 materials are `MeshPhysicalMaterial` (clear coat, thin film, bump), which
@@ -294,14 +294,14 @@ a real laptop GPU.
 
 ### Likeliest to be wrong
 
-1. The glow ring's strength on a real screen (`_glow` in `fly.js`, `aura`).
-   On the teal couch it should read as a glow, not a bubble; if it looks
-   like a helmet, lower the numbers there or the `2.2` in the aura shader.
+1. The crown glow's strength on a real screen (`_glow` in `fly.js`, `crown`
+   and `light`). A rim-lit shell round the head was tried and removed: it
+   read as a helmet. The eyes have no light of their own.
 2. The thin-film glints on the thorax (`iridescence*` and `specularColor`
    on the `chitin` material). On a calibrated screen they may look more
    rainbow than teal and bronze.
 3. The front feet on the pad. They are aimed at `BUTTON_AT` plus
    `BUTTON_TOP`; if a foot hovers or sinks into a control, those and the
    `0.03` hover and `0.042` push in `_reach` are the dials.
-4. The portrait framing (`PORTRAIT_FLY`) was raised a little so the ring of
-   glow and the antennae clear the top of the band.
+4. The portrait framing (`PORTRAIT_FLY`) was raised a little so the
+   antennae clear the top of the band.
