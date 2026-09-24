@@ -26,12 +26,20 @@ import { SEAT_HEIGHT, buildRoom } from './room.js';
 import { PORTRAIT_FLY, PORTRAIT_TV_SHARE, VIEWS, clamp } from './theme.js';
 import { SCREEN, Television } from './tv.js';
 
-const PORTRAIT = new URLSearchParams(window.location.search).get('portrait') === '1';
+// The page's query string, for a recording set-up (an OBS browser source
+// cannot press keys): `portrait=1` for the 9:16 layout, `view=1..4` to start
+// on that view, `clean=1` to hide the corner panel and the milestone strip
+// (the milestone flash still shows), `green=0` for the plain gray tube.
+const PARAMS = new URLSearchParams(window.location.search);
+const PORTRAIT = PARAMS.get('portrait') === '1';
+const START_VIEW = PARAMS.get('view') || '1';
+const CLEAN = PARAMS.get('clean') === '1';
 
 function boot() {
   const stage = document.getElementById('stage');
   const overlay = new Overlay(document.getElementById('overlay'));
   if (PORTRAIT) document.body.classList.add('portrait');
+  if (CLEAN) document.body.classList.add('clean');
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   // Portrait is for recording, so it draws at the full device pixel ratio
@@ -53,14 +61,14 @@ function boot() {
 
   const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.05, 60);
   const orbit = new Orbit(THREE, camera, renderer.domElement);
-  orbit.setView(VIEWS[1], true);
+  let viewKey = VIEWS[START_VIEW] ? START_VIEW : '1';
+  orbit.setView(VIEWS[viewKey], true);
 
   // The portrait composition's two cameras. Neither orbits.
   const tvCamera = new THREE.PerspectiveCamera(30, 1, 0.05, 60);
   const flyCamera = new THREE.PerspectiveCamera(PORTRAIT_FLY.fov, 1, 0.05, 60);
   const flyEye = new THREE.Vector3(...PORTRAIT_FLY.eye);
   const flyLook = new THREE.Vector3(...PORTRAIT_FLY.look);
-  let viewKey = '1';
   const composed = () => PORTRAIT && viewKey === '1';
   const viewName = () => (composed() ? 'portrait: the TV above the fly' : VIEWS[viewKey].name);
   overlay.setView(viewName());
@@ -80,6 +88,7 @@ function boot() {
 
   const room = buildRoom(THREE, scene);
   const television = new Television(THREE, scene);
+  if (PARAMS.get('green') === '0') television.setMode('gray');
   const fly = new FlyActor(THREE, scene, SEAT_HEIGHT);
   const monitor = new Monitor(THREE, scene);
   const strip = document.getElementById('strip');

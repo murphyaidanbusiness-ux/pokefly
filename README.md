@@ -310,6 +310,14 @@ Open the scene at the size you want to post and record the browser window:
 A milestone replay starts about 15 seconds before the moment, so start
 recording, then start `run.py --replay NAME --portrait`.
 
+The page takes a few query parameters for a recording set-up, since an OBS
+browser source cannot press keys: `view=1..4` starts on that view (`3` is
+the fly close-up, `2` the TV), `clean=1` hides the corner panel and the
+milestone strip and leaves only the milestone flash over the picture, and
+`green=0` gives the plain gray tube. They combine:
+`http://127.0.0.1:8765/?portrait=1&view=3&clean=1`. `docs/shot-list.md` is a
+shot list for a Reel, one command per shot.
+
 ### Continue where it left off
 
 Watching is one long save file:

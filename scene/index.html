@@ -131,6 +131,8 @@
      it (main.js); the strip is the band at the bottom, full width, and holds
      the compact status bar. The corner panel is not shown. */
   body.portrait #overlay { display: none; }
+  /* ?clean=1: nothing over the picture but the milestone flash, for B-roll. */
+  body.clean #overlay, body.clean #strip { display: none; }
   body.portrait #strip {
     left: 0; right: 0; bottom: 0; transform: none; width: 100vw;
     border-radius: 0; border-width: 1px 0 0 0;
