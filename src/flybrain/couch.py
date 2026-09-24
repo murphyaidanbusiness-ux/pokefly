@@ -121,15 +121,25 @@ def _read_exactly(reader, count: int) -> bytes:
     return data
 
 
-def read_client_frame(reader) -> tuple[int, bytes] | None:
-    """One frame from the client direction, unmasked. None at end of stream.
+def apply_mask(payload: bytes, mask: bytes) -> bytes:
+    """XOR `payload` with the four-byte `mask`, repeated. Masking and
+    unmasking are the same operation (RFC 6455 section 5.3). Done as one big
+    integer rather than byte by byte, so a large frame costs microseconds."""
+    size = len(payload)
+    if not size:
+        return b""
+    key = (bytes(mask) * (size // 4 + 1))[:size]
+    return (int.from_bytes(payload, "big") ^ int.from_bytes(key, "big")).to_bytes(size, "big")
 
-    Client frames are always masked; we accept an unmasked one too rather than
-    closing the connection over it, because nothing here trusts the payload.
-    """
+
+def read_frame(reader, limit: int = MAX_CLIENT_FRAME) -> tuple[bool, int, bytes] | None:
+    """One frame in either direction: (fin, opcode, unmasked payload), or
+    None at end of stream. A frame over `limit` bytes raises ValueError.
+    `record.py` reads the browser's side of a CDP socket with this too."""
     head = reader.read(2)
     if not head or len(head) < 2:
         return None
+    fin = bool(head[0] & 0x80)
     opcode = head[0] & 0x0F
     masked = bool(head[1] & 0x80)
     size = head[1] & 0x7F
@@ -137,13 +147,26 @@ def read_client_frame(reader) -> tuple[int, bytes] | None:
         size = struct.unpack("!H", _read_exactly(reader, 2))[0]
     elif size == 127:
         size = struct.unpack("!Q", _read_exactly(reader, 8))[0]
-    if size > MAX_CLIENT_FRAME:
-        raise ValueError(f"client frame of {size} bytes is far past anything a browser sends")
+    if size > limit:
+        raise ValueError(f"frame of {size} bytes is over the {limit}-byte limit")
     mask = _read_exactly(reader, 4) if masked else b""
     payload = _read_exactly(reader, size) if size else b""
     if masked and payload:
-        payload = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
-    return opcode, payload
+        payload = apply_mask(payload, mask)
+    return fin, opcode, payload
+
+
+def read_client_frame(reader) -> tuple[int, bytes] | None:
+    """One frame from the client direction, unmasked. None at end of stream.
+
+    Client frames are always masked; we accept an unmasked one too rather than
+    closing the connection over it, because nothing here trusts the payload.
+    Anything over MAX_CLIENT_FRAME is far past what a browser sends us.
+    """
+    frame = read_frame(reader, MAX_CLIENT_FRAME)
+    if frame is None:
+        return None
+    return frame[1], frame[2]
 
 
 def parse_command(payload: bytes) -> str | None:

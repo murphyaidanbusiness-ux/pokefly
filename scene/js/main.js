@@ -23,17 +23,22 @@ import { Feed, PROTOCOL_VERSION, unpackBits } from './net.js';
 import { Orbit } from './orbit.js';
 import { Overlay } from './overlay.js';
 import { SEAT_HEIGHT, buildRoom } from './room.js';
-import { PORTRAIT_FLY, PORTRAIT_TV_SHARE, VIEWS, clamp } from './theme.js';
+import { ORBIT_SPIN, PORTRAIT_FLY, PORTRAIT_TV_SHARE, VIEWS, clamp } from './theme.js';
 import { SCREEN, Television } from './tv.js';
 
 // The page's query string, for a recording set-up (an OBS browser source
 // cannot press keys): `portrait=1` for the 9:16 layout, `view=1..4` to start
 // on that view, `clean=1` to hide the corner panel and the milestone strip
-// (the milestone flash still shows), `green=0` for the plain gray tube.
+// (the milestone flash still shows), `green=0` for the plain gray tube, and
+// `orbit=1` to turn the camera slowly round the room on its own (for a
+// recorded orbit shot; `orbit=-1` turns the other way). In portrait, an
+// orbit on view 1 shows the room view full frame instead of the two-band
+// composition, which has no orbit camera. A number key or R stops the turn.
 const PARAMS = new URLSearchParams(window.location.search);
 const PORTRAIT = PARAMS.get('portrait') === '1';
 const START_VIEW = PARAMS.get('view') || '1';
 const CLEAN = PARAMS.get('clean') === '1';
+const ORBIT = Math.sign(Number(PARAMS.get('orbit')) || 0);
 
 function boot() {
   const stage = document.getElementById('stage');
@@ -63,13 +68,19 @@ function boot() {
   const orbit = new Orbit(THREE, camera, renderer.domElement);
   let viewKey = VIEWS[START_VIEW] ? START_VIEW : '1';
   orbit.setView(VIEWS[viewKey], true);
+  let spinning = ORBIT !== 0;
+  orbit.spin = ORBIT * ORBIT_SPIN;
 
   // The portrait composition's two cameras. Neither orbits.
   const tvCamera = new THREE.PerspectiveCamera(30, 1, 0.05, 60);
   const flyCamera = new THREE.PerspectiveCamera(PORTRAIT_FLY.fov, 1, 0.05, 60);
   const flyEye = new THREE.Vector3(...PORTRAIT_FLY.eye);
   const flyLook = new THREE.Vector3(...PORTRAIT_FLY.look);
-  const composed = () => PORTRAIT && viewKey === '1';
+  const composed = () => PORTRAIT && viewKey === '1' && !spinning;
+  const stopSpin = () => {
+    spinning = false;
+    orbit.spin = 0;
+  };
   const viewName = () => (composed() ? 'portrait: the TV above the fly' : VIEWS[viewKey].name);
   overlay.setView(viewName());
 
@@ -155,6 +166,7 @@ function boot() {
     if (event.target && event.target.tagName === 'BUTTON' && (event.key === ' ' || event.key === 'Enter')) return;
     const key = event.key.toLowerCase();
     if (VIEWS[key]) {
+      stopSpin();
       viewKey = key;
       orbit.setView(VIEWS[key]);
       overlay.setView(viewName());
@@ -169,6 +181,7 @@ function boot() {
     } else if (key === 'h') {
       overlay.toggle();
     } else if (key === 'r') {
+      stopSpin();
       viewKey = '1';
       orbit.setView(VIEWS[1]);
       overlay.setView(viewName());

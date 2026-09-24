@@ -288,7 +288,11 @@ class LoopOptions:
     # each polled once per tick for "pause" and "save"
     # (the couch's buttons arrive this way)
     on_start: Callable[[object], None] | None = None  # called with the fly once
-    # it is set up, before the first tick
+    # it is set up, before the first tick. `run.py --record` waits here for
+    # the browser, so a replay's take starts on its first tick. If it raises,
+    # the emulator is closed and the error goes to the caller.
+    stop_when: Callable[[], bool] | None = None  # polled between ticks; True
+    # ends the run the way max_steps does (a finished recording)
 
 
 def terminal_keys() -> Callable[[], list[str]] | None:
@@ -483,7 +487,12 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
     recorder = options.recorder
     journey = options.journey
     if options.on_start is not None:
-        options.on_start(fly)
+        try:
+            options.on_start(fly)
+        except BaseException:
+            emulator.close()
+            raise
+    stop_when = options.stop_when
     if recorder is not None:
         recorder.begin(fly, 0)
     if journey is not None:
@@ -506,6 +515,8 @@ def run_loop(cfg: Config, observers: Iterable[object] = (), options: LoopOptions
     with _StopFlag() as stop:
         try:
             while (cfg.max_steps == 0 or step < cfg.max_steps) and not stop.hit:
+                if stop_when is not None and stop_when():
+                    break
                 commands = _poll(sources) if sources else []
                 if (toggle is not None and toggle()) or "pause" in commands:
                     held = time.perf_counter()

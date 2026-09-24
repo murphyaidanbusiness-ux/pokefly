@@ -151,6 +151,15 @@ export const CABLE_FLOOR = [0.06, 0.012, 0.84];
 /** How much of the portrait frame the TV close-up takes, from the top. */
 export const PORTRAIT_TV_SHARE = 0.45;
 
+/** `?orbit=1`: the camera turns round the room by itself, for a recorded
+ *  orbit shot nobody has to drag. Radians a second: about 7 degrees a second,
+ *  40 in the six seconds the shot list asks for. It turns the way a drag to
+ *  the LEFT does, from view 1 across the couch to the lamp and the coffee
+ *  table; the other way (`orbit=-1`) runs the camera through the brain
+ *  monitor, the couch back and a lamp within ten seconds (rendered and
+ *  looked at, 2026-09-23). */
+export const ORBIT_SPIN = 0.12;
+
 export const clamp = (value, low, high) => (value < low ? low : value > high ? high : value);
 
 /** Frame-rate independent approach, the same shape as three's MathUtils.damp. */

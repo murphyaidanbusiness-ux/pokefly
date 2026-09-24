@@ -12,6 +12,10 @@ Any flag that chooses its own brain or start point (`--brain`, `--naive`,
 `--neurons`, `--replay`) or `--no-journey` is the old behaviour: one run,
 nothing saved unless asked.
 
+`--record out.mp4` renders the couch scene to a file in headless Edge or
+Chrome instead of opening a tab (`src/flybrain/record.py`). A take never
+writes the journey save or the milestone log.
+
 No install step: src/ goes on sys.path here.
 """
 
@@ -20,6 +24,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import time
 import webbrowser
 from dataclasses import replace
 from pathlib import Path
@@ -32,6 +37,7 @@ from flybrain.hud import Hud, PlainLog  # noqa: E402
 from flybrain.journey import JourneySave, JourneySession  # noqa: E402
 from flybrain.loop import MISSING_ROM_EXIT, LoopOptions, require_rom, run_loop  # noqa: E402
 from flybrain.milestones import LABELS, JourneyLog, MilestoneRecorder, game_time  # noqa: E402
+from flybrain.record import RecordError  # noqa: E402
 from flybrain.snapshot import FlySnapshot, SnapshotMismatch  # noqa: E402
 
 BEST_BRAIN = ROOT / "brains" / "latest.npz"
@@ -130,8 +136,43 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
     parser.add_argument("--fresh", action="store_true", help="discard the journey save and start a new journey")
     parser.add_argument("--yes", action="store_true", help="with --fresh, do not ask")
     parser.add_argument("--no-learn", action="store_true", help="journey mode: freeze the journey brain")
+    parser.add_argument(
+        "--record",
+        metavar="OUT.mp4",
+        type=Path,
+        default=None,
+        help="render the couch scene to an mp4 in headless Edge/Chrome (1080x1920 with --portrait, else 1920x1080)",
+    )
+    parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="with --record, the take's length (default 20; a replay's own length plus 5)",
+    )
+    parser.add_argument("--record-fps", type=int, default=None, help="with --record, frames per second (default 60)")
+    parser.add_argument("--browser", type=Path, default=None, help="with --record, the browser to render with")
+    parser.add_argument(
+        "--scene-params",
+        metavar="QUERY",
+        default="",
+        help="extra query parameters for the scene page, e.g. view=4&clean=1 (see README, Portrait mode)",
+    )
     args = parser.parse_args(argv)
 
+    if args.record is not None:
+        # A take: the scene renders in a headless browser, so no SDL window
+        # and no tab of ours opens. The terminal HUD stays.
+        args.couch = True
+        args.no_browser = True
+        args.window = False
+        if args.fresh:
+            parser.error("--record never writes the journey, so --fresh has nothing to start")
+        if args.seconds is not None and args.seconds <= 0:
+            parser.error("--seconds must be positive")
+        if args.record_fps is not None and args.record_fps <= 0:
+            parser.error("--record-fps must be positive")
+    elif args.seconds is not None or args.record_fps is not None or args.browser is not None:
+        parser.error("--seconds, --record-fps and --browser only mean something with --record")
     if args.portrait:
         args.couch = True
     if args.replay is not None and not args.headless:
@@ -256,6 +297,80 @@ def set_up_journey(cfg: Config, options: LoopOptions, args: argparse.Namespace, 
     return replace(cfg, load_state=BEDROOM)
 
 
+# --------------------------------------------------------------------- take ---
+
+
+def set_up_take(cfg: Config, options: LoopOptions, args: argparse.Namespace, store: JourneySave) -> Config:
+    """A `--record` run that is not a replay. A take never writes: no journey
+    save, no milestone log, no replay folders. When the run would have been a
+    journey it plays on from the journey save (read only, learning as asked)
+    so the strip and the game time are the journey's; with no save yet it
+    starts from the bedroom with the best brain, without copying anything."""
+    if not args.journey:
+        print(f"record: one run ({args.journey_off}); a take writes nothing", flush=True)
+        return cfg
+    learn = not args.no_learn
+    options.hourly_schedule = True
+    options.learn = learn
+    if store.exists():
+        snapshot, manifest = store.load()
+        options.start = snapshot
+        options.brain_path = None
+        print(
+            f"record: a take from the journey save ({manifest['game_time']} of game time, brain at "
+            f"{manifest['episodes_trained']} episodes, {'learning' if learn else 'learning frozen'}); "
+            "nothing is written back",
+            flush=True,
+        )
+        return replace(cfg, load_state=None)
+    require_start_state(BEDROOM)
+    options.brain_path = BEST_BRAIN if BEST_BRAIN.is_file() else None
+    print(
+        f"record: no journey save yet, so the take starts from {BEDROOM} with "
+        f"{options.brain_path or 'a naive brain'}; nothing is written",
+        flush=True,
+    )
+    return replace(cfg, load_state=BEDROOM)
+
+
+class TakeStarter:
+    """An observer that starts the take once the page has had the game's
+    first frame for `lead` seconds, so a take opens on the game and not on
+    the TV's static. A page that never gets a frame still starts after two
+    seconds of ticks, so the take cannot wait for ever."""
+
+    def __init__(self, recorder, watcher, lead: float, clock=None) -> None:
+        self.recorder, self.watcher, self.lead = recorder, watcher, float(lead)
+        self.clock = clock or time.perf_counter
+        self.first_tick: float | None = None
+        self.first_video: float | None = None
+        self.started = False
+
+    def __call__(self, tick) -> None:
+        if self.started:
+            return
+        now = self.clock()
+        if self.first_tick is None:
+            self.first_tick = now
+        if self.first_video is None and self.watcher.videos_sent > 0:
+            self.first_video = now
+        if (self.first_video is not None and now - self.first_video >= self.lead) or now - self.first_tick >= 2.0:
+            self.recorder.begin()
+            self.started = True
+
+
+def scene_url(base: str, portrait: bool, params: str = "") -> str:
+    """The page a run opens: `portrait=1` first when asked, then whatever
+    `--scene-params` adds (`view=4&clean=1`)."""
+    parts = []
+    if portrait:
+        parts.append("portrait=1")
+    extra = params.strip().lstrip("?&")
+    if extra:
+        parts.append(extra)
+    return base + ("?" + "&".join(parts) if parts else "")
+
+
 # ------------------------------------------------------------------- replay ---
 
 
@@ -315,8 +430,11 @@ def set_up_replay(cfg: Config, options: LoopOptions, name: str) -> tuple[Config,
 
 
 def run_with_couch(cfg: Config, options: LoopOptions, args: argparse.Namespace, observers: list, extras=None,
-                   replay_target=None) -> None:
-    """The same loop, with the scene server and its observer around it."""
+                   replay_target=None):
+    """The same loop, with the scene server and its observer around it. With
+    `--record` a headless browser renders the page into the file, the loop
+    waits for it before its first tick, and the run ends with the take.
+    Returns the RecordResult for a take, None otherwise."""
     from flybrain.couch import CouchServer
     from flybrain.couch_observer import CouchObserver
 
@@ -325,14 +443,40 @@ def run_with_couch(cfg: Config, options: LoopOptions, args: argparse.Namespace, 
     watcher.extras = extras
     watcher.replay_target = replay_target
     options.commands.append(server.hub.take_commands)
-    url = server.url + ("?portrait=1" if args.portrait else "")
+    url = scene_url(server.url, args.portrait, args.scene_params)
     print(f"couch: {url}   scene files from {server.root}", flush=True)
     print("couch: Ctrl+C stops the run and releases the port.", flush=True)
-    if not args.no_browser:
+    recorder = None
+    if args.record is not None:
+        from flybrain.record import Recorder, frame_size
+
+        size = frame_size(args.portrait)
+        recorder = Recorder(
+            cfg, url, args.record, args.seconds, fps=args.record_fps, size=size, browser=args.browser
+        ).start()
+        print(
+            f"record: {args.record}, {args.seconds:g} s at {recorder.fps} fps, {size[0]}x{size[1]}; "
+            "the game waits for the browser",
+            flush=True,
+        )
+
+        options.on_start = lambda fly: recorder.wait_ready()
+        options.stop_when = recorder.take_over.is_set
+        observers = [*observers, TakeStarter(recorder, watcher, cfg.couch_record_lead)]
+    elif not args.no_browser:
         webbrowser.open(url)
+    result = None
     try:
         run_loop(cfg, observers=(*observers, watcher), options=options)
     finally:
+        if recorder is not None:
+            # Before the server goes, so the last frames are of a live page.
+            recorder.stop()
+            result = recorder.join()
+            print(f"record: {result.line()}", flush=True)
+            warning = result.warning()
+            if warning:
+                print(f"record: {warning}", flush=True)
         server.stop()
         print(
             f"couch: {watcher.states_sent} state and {watcher.videos_sent} video messages published, "
@@ -340,15 +484,25 @@ def run_with_couch(cfg: Config, options: LoopOptions, args: argparse.Namespace, 
             f"{server.hub.commands_received} commands from the page",
             flush=True,
         )
+    return result
 
 
-def main() -> None:
-    cfg, options, args = parse_args()
+def main(argv: list[str] | None = None):
+    """One run. Returns the RecordResult for a `--record` take, else None
+    (`scripts/render_shots.py` calls this in-process, once per shot)."""
+    cfg, options, args = parse_args(argv)
     # Everything a run needs from disk is checked here, before a journey
     # folder is made, a brain copied or the HUD has cleared the screen.
     require_rom(cfg)
     if cfg.load_state is not None:
         require_start_state(cfg.load_state)
+    if args.record is not None:
+        from flybrain.record import find_browser
+
+        if find_browser(args.browser) is None:
+            where = args.browser or "Edge or Chrome in the usual places"
+            print(f"cannot record: no browser found ({where}); pass --browser PATH", file=sys.stderr)
+            raise SystemExit(2)
     extras = None
     replay_target = None
     observers: list = []
@@ -357,6 +511,12 @@ def main() -> None:
         cfg, check = set_up_replay(cfg, options, args.replay)
         observers.append(check)
         replay_target = (check.name, check.landed_tick)
+        if args.record is not None and args.seconds is None:
+            # The replay's own length, then long enough for the flash.
+            start = int(options.start.meta["start_tick"])
+            args.seconds = (check.landed_tick - start) / cfg.game_hz + cfg.couch_record_tail
+    elif args.record is not None:
+        cfg = set_up_take(cfg, options, args, JourneySave(JOURNEY_DIR))
     else:
         options.recorder = MilestoneRecorder(cfg, MILESTONES, "watch", JourneyLog(MILESTONES / "journey.json"))
         if args.journey:
@@ -376,11 +536,25 @@ def main() -> None:
     if extras is not None and hasattr(display, "status"):
         display.status = extras
     observers.insert(0, display)
+    if args.record is not None and args.seconds is None:
+        args.seconds = cfg.couch_record_seconds
+    result = None
     try:
         if args.couch:
-            run_with_couch(cfg, options, args, observers, extras=extras, replay_target=replay_target)
+            result = run_with_couch(cfg, options, args, observers, extras=extras, replay_target=replay_target)
         else:
             run_loop(cfg, observers=tuple(observers), options=options)
+    except RecordError as error:
+        display.close()
+        print(f"cannot record: {error}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except KeyboardInterrupt:
+        # Ctrl+C while the browser was still starting: the loop never ran,
+        # and the recorder has already closed whatever file it had.
+        if args.record is None:
+            raise
+        display.close()
+        print("record: stopped before the take began", file=sys.stderr)
     except SnapshotMismatch as error:
         # A journey save or a replay from a fly built with other numbers: say
         # so in one line rather than a traceback under a half-drawn HUD.
@@ -394,6 +568,7 @@ def main() -> None:
         # never got that far (PyBoy refused the ROM, a state failed to load)
         # the HUD still has to give the cursor back.
         display.close()
+    return result
 
 
 if __name__ == "__main__":

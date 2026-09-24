@@ -87,6 +87,11 @@ episode that score came from. `--naive` ignores it.
 | `--no-journey` | one run, no journey save |
 | `--fresh` | discard the journey save and start a new journey (asks for `y`; `--fresh --yes` does not) |
 | `--no-learn` | journey mode: freeze the journey brain |
+| `--record OUT.mp4` | render the couch scene to a file in headless Edge or Chrome: 1080x1920 with `--portrait`, 1920x1080 without. Implies `--couch` with no browser tab and no SDL window; the HUD stays. A take writes no journey save and nothing under `milestones/` (see "How to record") |
+| `--seconds N` | with `--record`, the take's length: default 20, or for a `--replay` the replay's own length plus 5 s so the flash is in it |
+| `--record-fps N` | with `--record`, frames per second in the file (default 60; 30 for a lighter file) |
+| `--browser PATH` | with `--record`, the browser to render with (default: Edge, then Chrome, wherever they are installed) |
+| `--scene-params QUERY` | extra query parameters for the scene page, such as `view=4&clean=1` (see "Portrait mode" and "How to record") |
 
 A run is a journey unless it has `--no-journey`, `--replay`, `--brain`,
 `--naive`, `--load-state`, `--start-state`, `--save-brain`, `--connectome`, or
@@ -298,7 +303,76 @@ yet.
 
 ### How to record
 
-Open the scene at the size you want to post and record the browser window:
+The project renders its own video. Nothing else on the machine has to record:
+
+```powershell
+& .\.venv\Scripts\python.exe run.py --record out.mp4 --portrait --no-learn                  # 20 s of the journey, 1080x1920
+& .\.venv\Scripts\python.exe run.py --record lab.mp4 --replay entered_lab --portrait        # the whole replay plus 5 s
+& .\.venv\Scripts\python.exe run.py --record fly.mp4 --portrait --scene-params "view=3&clean=1" --seconds 30
+& .\.venv\Scripts\python.exe scripts\render_shots.py                                       # every shot in docs/shot-list.md, into shots/
+```
+
+`--record` starts the scene server as `--couch` does, but instead of opening
+a tab it launches a headless Edge (or Chrome; `--browser PATH` picks one) with
+a throwaway profile, tells the page its viewport is exactly the file's size at
+device pixel ratio 1 (`Emulation.setDeviceMetricsOverride`), and takes every
+repaint as a JPEG over the DevTools protocol (`Page.startScreencast`, quality
+90), acknowledging each one the moment it arrives. `src/flybrain/record.py`
+holds all of it: the client half of the WebSocket (the server half was already
+in `couch.py`), a small JSON-RPC client, and the pacer. No new dependency: the
+file is written by the OpenCV the project already had (`cv2.VideoWriter`,
+`mp4v`).
+
+- **Constant frame rate.** The browser sends a frame whenever the page
+  repaints, near 60 a second but never exactly. The file gets exactly
+  `fps x seconds` frames: each capture takes the next slot, a gap of more than
+  a whole slot repeats the last capture, and captures arriving faster than the
+  file drop the extras, so the picture is never more than about a slot off its
+  real time. The screencast's timestamps wobble by up to half a frame either
+  way under load, which is why it is not a fixed grid (on a real 10 s take, a
+  grid kept 487 distinct frames of 581 captures; this keeps 578).
+- **The capture rate is printed** at the end of every take, with the WebGL
+  renderer and the page's own frame rate; under 50 captures a second it says
+  so in capitals, because a 60 fps file made of 40 fps captures stutters.
+- **The game waits for the browser.** The loop's first tick waits until the
+  scene has booted and frames are flowing, and the take starts 0.15 s after
+  the first game frame reaches the page, so a replay's take opens on its
+  first second and no take opens on the TV's static. The loop keeps its 60 Hz
+  pacing throughout and stops when the take is long enough.
+- **Encoding never holds the capture up.** Each capture's JPEG goes to a spool
+  file as it arrives; one thread decodes and another encodes behind it. With
+  the browser and the game on the same CPU the two manage about 37 frames a
+  second at 1080x1920, so the file finishes a few seconds after the take does
+  (the take's own line says how long).
+- **Ctrl+C** ends the take where it is and closes the file properly; the
+  browser runs in its own process group, so the Ctrl+C does not reach it.
+- **A take writes nothing.** A journey take plays on from `saves/journey/`
+  read only (learning frozen with `--no-learn`); with no save yet it starts
+  from the bedroom with the best brain. No autosave, no milestone log, no
+  replay folders. `--save-state` and `--save-brain` still do what they say.
+- **Its own port.** Pass `--couch-port` to render while a `run.py --couch` of
+  yours holds 8765; `scripts/render_shots.py` picks a free port per shot.
+- **The files are big.** OpenCV writes `mp4v` at about 130 to 150 Mbit/s at
+  1080x1920 and 60 fps (a 20 s take is about 340 MB, the 30 s fly close-up
+  600 MB), and this build ignores `VIDEOWRITER_PROP_QUALITY` on that codec, so
+  there is no knob short of another encoder. `--record-fps 30` halves it.
+  Instagram re-encodes whatever it gets.
+
+Measured here (i7-11700F, RTX 3060 Ti), the whole shot list with
+`scripts/render_shots.py`: nine files, 162 s of video, 4.4 minutes of wall
+clock, every take captured at 54 to 58 frames a second with none dropped, and
+each of the three replays landed on the tick it was recorded at.
+
+WebGL in headless Edge here: the GPU path (`--use-angle=default
+--ignore-gpu-blocklist` on top of `--headless=new --disable-gpu-vsync
+--hide-scrollbars --autoplay-policy=no-user-gesture-required`) worked on the
+first try, ANGLE on Direct3D 11 on the RTX 3060 Ti, and the page drew 60
+frames a second at 1080x1920. SwiftShader (`--use-angle=swiftshader
+--enable-unsafe-swiftshader`) is the fallback the recorder tries if the scene
+will not boot on the GPU; it has not been needed here and its frame rate is
+unmeasured.
+
+For a live take instead, record the browser window yourself:
 
 - **OBS**: a Window Capture of the browser (or a Browser Source pointed at
   `http://127.0.0.1:8765/?portrait=1` at 1080x1920), canvas 1080x1920, 60 fps.
@@ -307,16 +381,20 @@ Open the scene at the size you want to post and record the browser window:
 - For exactly 1080x1920 on an ordinary monitor, Chrome DevTools' device toolbar
   with a custom 1080x1920 device at DPR 1 gives the page that viewport.
 
-A milestone replay starts about 15 seconds before the moment, so start
-recording, then start `run.py --replay NAME --portrait`.
+A milestone replay starts about 15 seconds before the moment, so for a live
+take start recording, then start `run.py --replay NAME --portrait`.
 
-The page takes a few query parameters for a recording set-up, since an OBS
-browser source cannot press keys: `view=1..4` starts on that view (`3` is
-the fly close-up, `2` the TV), `clean=1` hides the corner panel and the
-milestone strip and leaves only the milestone flash over the picture, and
-`green=0` gives the plain gray tube. They combine:
-`http://127.0.0.1:8765/?portrait=1&view=3&clean=1`. `docs/shot-list.md` is a
-shot list for a Reel, one command per shot.
+The page takes a few query parameters for a recording set-up, since nobody
+presses keys in one: `view=1..4` starts on that view (`3` is the fly
+close-up, `2` the TV), `clean=1` hides the corner panel and the milestone
+strip and leaves only the milestone flash over the picture, `green=0` gives
+the plain gray tube, and `orbit=1` turns the camera slowly round the room on
+its own (about 7 degrees a second, the way a drag to the left turns it;
+`orbit=-1` the other way, which from view 1 runs into the furniture). In
+portrait an orbit on view 1 shows the room full frame, since the composition
+has no orbit camera. They combine: `http://127.0.0.1:8765/?portrait=1&view=3&clean=1`,
+or `--scene-params "view=3&clean=1"` on a `--record`. `docs/shot-list.md` is a
+shot list for a Reel, and `scripts/render_shots.py` renders all of it.
 
 ### Continue where it left off
 
@@ -1006,11 +1084,14 @@ are the reasons, not excuses:
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-232 tests, all headless, about a minute. They pass with no ROM present; the
-handful that need one skip when `roms/pokemon_red.gb` is absent, and the short
-training test also needs `states/bedroom.state`. `tests/test_emulator.py` and
-`tests/test_run.py` run the real emulator on the ROM PyBoy ships for its own
-demo, so a fresh clone with no Pokemon ROM still exercises PyBoy end to end.
+271 tests, all headless, about a minute and a half. They pass with no ROM
+present; the handful that need one skip when `roms/pokemon_red.gb` is absent,
+and the short training test also needs `states/bedroom.state`.
+`tests/test_emulator.py` and `tests/test_run.py` run the real emulator on the
+ROM PyBoy ships for its own demo, so a fresh clone with no Pokemon ROM still
+exercises PyBoy end to end. `tests/test_record.py` renders a real 3 s take of
+the scene on that ROM in headless Edge or Chrome, and skips when there is
+neither.
 
 Two of them carry most of the weight.
 

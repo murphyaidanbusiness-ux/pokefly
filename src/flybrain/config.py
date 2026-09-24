@@ -267,6 +267,25 @@ class Config:
     couch_pace_hz: float = 60.0  # PyBoy's null window does not limit speed, so the
     # loop paces itself here. Measured without it:
     # about 1,400 ticks/s headless, 23x too fast to watch.
+    # `run.py --record`: headless Edge renders the scene, the frames come
+    # over CDP's Page.startScreencast and go into an mp4 (`record.py`).
+    # Named couch_* so none of them is in the dynamics fingerprint.
+    couch_record_fps: int = 60  # frames per second in the file
+    couch_record_seconds: float = 20.0  # a take's length with no --seconds
+    couch_record_tail: float = 5.0  # a replay's take runs this long after the
+    # milestone lands, so the flash is in it
+    couch_record_quality: int = 90  # the browser's JPEG quality per frame
+    couch_record_min_fps: float = 50.0  # a capture rate under this is
+    # reported loudly: a 60 fps file made of fewer captures stutters
+    couch_record_lead: float = 0.15  # seconds between the first game frame
+    # going to the page and the take starting, so a take does not open on the
+    # TV's static (measured: without it the first frame of every take was)
+    couch_record_ready_timeout: float = 40.0  # seconds for the browser to
+    # start, load the scene and boot it before the take is abandoned
+    couch_record_stall: float = 3.0  # seconds past the take's end, by the
+    # wall clock, before a page that stopped repainting ends the take
+    couch_record_backlog: int = 600  # screencast frames held waiting for the
+    # encoder (about 0.4 MB each) before new ones are dropped and counted
 
     # ---- hud ------------------------------------------------------------
     hud_every: int = 6  # ticks between HUD redraws

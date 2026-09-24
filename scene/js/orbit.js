@@ -23,6 +23,7 @@ export class Orbit {
     this.wantTheta = this.theta;
     this.wantPhi = this.phi;
     this.shake = 0;
+    this.spin = 0; // radians a second of automatic turn (`?orbit=1`); a drag pauses it
     this._drag = null;
     this._pointers = new Map();
     this._pinch = 0;
@@ -52,6 +53,8 @@ export class Orbit {
   }
 
   update(dt) {
+    // A positive spin turns the way a drag to the LEFT does (see _turn).
+    if (this.spin && !this._drag) this.wantTheta += this.spin * dt;
     const lambda = this._drag ? 30 : 7;
     this.theta = approach(this.theta, this.wantTheta, lambda, dt);
     this.phi = approach(this.phi, this.wantPhi, lambda, dt);
