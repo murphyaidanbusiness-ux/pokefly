@@ -23,6 +23,11 @@ the voice.
 | 7 | "still waiting for him to pick his starter" | the fly close-up, idle: breathing, an antenna twitch, a press or two. Long take, 30 s | `run.py --portrait --no-learn` then `?portrait=1&view=3&clean=1` |
 | 8 | outro, "comment Pokemon" | the composition again with the strip on, so the milestone list and game time are visible under the call to action | `?portrait=1` |
 
+`scripts\shots.ps1` walks this table for you: it starts each shot's run,
+opens its URL, waits for Enter, stops the run and moves to the next.
+`.\scripts\shots.ps1 4` starts at shot 4; add `-Only` for just that one.
+Stop any other `run.py` first (Ctrl+C), because it holds port 8765.
+
 Replays only exist for milestones the journey has reached. `run.py --replay
 NAME` with no replay lists the ones there are. A replay that prints
 `DIVERGED` was recorded before the savestate fix in `emulator.py`; run the
