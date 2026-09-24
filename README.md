@@ -30,9 +30,12 @@ py -3.13 -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-The ROM is yours to supply. Put your own Pokemon Red dump at `roms/pokemon_red.gb`
-(1 MB, `.gb`). `roms/` is gitignored and nothing in this project downloads a ROM.
-If the file is missing, `run.py` prints the exact path it wanted and exits 2.
+The ROM is yours to supply. Drop your own Pokemon Red dump (1 MB, `.gb`) into
+`roms/`, under any name. `run.py` and `train.py` read it from there: a file
+called `pokemon_red.gb` if there is one, otherwise the only `.gb` in the
+folder. With none, or with several and none called `pokemon_red.gb`, they say
+what they found and exit 2. Everything in `roms/` except its README is
+gitignored, and nothing in this project downloads a ROM.
 
 Two more files are made locally and never committed. `states/bedroom.state`,
 the savestate every episode and every journey starts from, is made by
@@ -67,7 +70,7 @@ episode that score came from. `--naive` ignores it.
 
 | flag | what it does |
 |---|---|
-| `--rom PATH` | ROM location (default: `roms/pokemon_red.gb` next to `run.py`) |
+| `--rom PATH` | ROM location (default: the ROM in `roms/` next to `run.py`) |
 | `--neurons N` | network size, 1000 to 5000 (default 2000) |
 | `--seed N` | seeds the connectome, the optic-lobe noise and the panic reflex |
 | `--uncapped` | run as fast as the CPU allows instead of 60 Hz |
@@ -1099,8 +1102,8 @@ are the reasons, not excuses:
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-275 tests, all headless, about a minute and a half. They pass with no ROM
-present; the handful that need one skip when `roms/pokemon_red.gb` is absent,
+278 tests, all headless, about a minute and a half. They pass with no ROM
+present; the handful that need one skip when `roms/` has no ROM,
 and the short training test also needs `states/bedroom.state`.
 `tests/test_emulator.py` and `tests/test_run.py` run the real emulator on the
 ROM PyBoy ships for its own demo, so a fresh clone with no Pokemon ROM still

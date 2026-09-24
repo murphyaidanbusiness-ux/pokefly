@@ -252,11 +252,43 @@ def build_connectome(cfg: Config) -> Connectome:
     return synthetic(n=cfg.n_neurons, k=cfg.lattice_k, rewire_p=cfg.rewire_p, seed=cfg.seed, cfg=cfg)
 
 
+ROM_NAME = "pokemon_red.gb"
+
+
+def roms_in(folder: Path) -> list[Path]:
+    """Every .gb file directly in `folder`, sorted by name."""
+    if not folder.is_dir():
+        return []
+    return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".gb")
+
+
+def find_rom(folder: str | Path) -> Path:
+    """The ROM in the drop-in folder: `pokemon_red.gb` when it is there, else
+    the one .gb file in the folder whatever it is called. With none, or with
+    several and no `pokemon_red.gb`, it returns the `pokemon_red.gb` path, and
+    `require_rom` says what it found."""
+    folder = Path(folder)
+    named = folder / ROM_NAME
+    if named.is_file():
+        return named
+    found = roms_in(folder)
+    return found[0] if len(found) == 1 else named
+
+
 def require_rom(cfg: Config) -> Path:
     rom = Path(cfg.rom_path)
     if not rom.is_file():
         print(f"ROM not found: {rom.resolve()}", file=sys.stderr)
-        print("Put your own Pokemon Red dump (1 MB, .gb) at that exact path and run again.", file=sys.stderr)
+        found = roms_in(rom.parent)
+        if len(found) > 1:
+            names = ", ".join(p.name for p in found)
+            print(f"{rom.parent.resolve()} has more than one: {names}.", file=sys.stderr)
+            print("Keep one there, or name it with --rom PATH.", file=sys.stderr)
+        else:
+            print(
+                f"Drop your own Pokemon Red dump (1 MB, .gb) into {rom.parent.resolve()} and run again.",
+                file=sys.stderr,
+            )
         raise SystemExit(MISSING_ROM_EXIT)
     return rom
 

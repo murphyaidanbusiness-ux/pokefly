@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from flybrain.config import Config  # noqa: E402
+from flybrain.loop import find_rom  # noqa: E402
 from flybrain.training import (  # noqa: E402
     evaluate,
     learning_curve,
@@ -28,7 +29,7 @@ MILESTONES = ROOT / "milestones"
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the fly's mushroom body on Pokemon Red.")
-    parser.add_argument("--rom", type=Path, default=ROOT / "roms" / "pokemon_red.gb")
+    parser.add_argument("--rom", type=Path, default=None, help="default: the ROM in roms/")
     parser.add_argument("--ticks", type=int, default=Config.train_ticks, help="total tick budget")
     parser.add_argument("--episode-ticks", type=int, default=Config.episode_ticks)
     parser.add_argument("--seed", type=int, default=0)
@@ -71,7 +72,8 @@ def main() -> None:
     if args.milestones is not None:
         print_milestone_table(args.milestones)
         return
-    cfg = replace(Config(), rom_path=args.rom, seed=args.seed, n_neurons=args.neurons, headless=True, uncapped=True)
+    rom = args.rom if args.rom is not None else find_rom(ROOT / "roms")
+    cfg = replace(Config(), rom_path=rom, seed=args.seed, n_neurons=args.neurons, headless=True, uncapped=True)
     milestones_dir = None if args.no_record else MILESTONES
 
     if args.make_start_state:

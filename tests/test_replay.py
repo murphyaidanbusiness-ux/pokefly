@@ -30,7 +30,7 @@ BEDROOM = ROOT / "states" / "bedroom.state"
 BEST = ROOT / "brains" / "latest.npz"
 
 pytestmark = [
-    pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present"),
+    pytest.mark.skipif(not ROM.is_file(), reason="no ROM in roms/"),
     pytest.mark.skipif(not BEDROOM.is_file(), reason="states/bedroom.state not present"),
 ]
 

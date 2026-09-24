@@ -7,7 +7,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
-ROM = ROOT / "roms" / "pokemon_red.gb"
+from flybrain.loop import find_rom  # noqa: E402
+
+ROM = find_rom(ROOT / "roms")
 
 HEIGHT, WIDTH = 144, 160
 

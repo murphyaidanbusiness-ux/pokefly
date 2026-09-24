@@ -7,9 +7,9 @@ import pytest
 
 from conftest import ROM
 from flybrain.config import Config
-from flybrain.loop import run_loop
+from flybrain.loop import find_rom, require_rom, run_loop
 
-@pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present")
+@pytest.mark.skipif(not ROM.is_file(), reason="no ROM in roms/")
 def test_600_headless_ticks_through_the_real_loop():
     cfg = replace(
         Config(),
@@ -35,7 +35,30 @@ def test_missing_rom_exits_with_code_2(tmp_path):
     assert excinfo.value.code == 2
 
 
-@pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present")
+def test_find_rom_takes_any_one_gb_file_in_the_folder(tmp_path):
+    assert find_rom(tmp_path) == tmp_path / "pokemon_red.gb"
+    (tmp_path / "README.md").write_text("not a rom")
+    (tmp_path / "Pokemon - Red Version (USA, Europe).GB").write_bytes(b"x")
+    assert find_rom(tmp_path) == tmp_path / "Pokemon - Red Version (USA, Europe).GB"
+
+
+def test_find_rom_prefers_pokemon_red_gb_over_other_files(tmp_path):
+    (tmp_path / "a.gb").write_bytes(b"x")
+    (tmp_path / "pokemon_red.gb").write_bytes(b"x")
+    assert find_rom(tmp_path) == tmp_path / "pokemon_red.gb"
+
+
+def test_two_unnamed_roms_are_refused_by_name(tmp_path, capsys):
+    (tmp_path / "a.gb").write_bytes(b"x")
+    (tmp_path / "b.gb").write_bytes(b"x")
+    cfg = replace(Config(), rom_path=find_rom(tmp_path))
+    with pytest.raises(SystemExit) as excinfo:
+        require_rom(cfg)
+    assert excinfo.value.code == 2
+    assert "a.gb, b.gb" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(not ROM.is_file(), reason="no ROM in roms/")
 def test_pause_holds_the_game_and_resumes():
     """Pressing the pause key stops ticking, releases the buttons, and a second press resumes."""
     from flybrain.config import Config

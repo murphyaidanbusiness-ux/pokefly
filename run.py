@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from flybrain.config import Config  # noqa: E402
 from flybrain.hud import Hud, PlainLog  # noqa: E402
 from flybrain.journey import JourneySave, JourneySession  # noqa: E402
-from flybrain.loop import MISSING_ROM_EXIT, LoopOptions, require_rom, run_loop  # noqa: E402
+from flybrain.loop import MISSING_ROM_EXIT, LoopOptions, find_rom, require_rom, run_loop  # noqa: E402
 from flybrain.milestones import LABELS, JourneyLog, MilestoneRecorder, game_time  # noqa: E402
 from flybrain.record import RecordError  # noqa: E402
 from flybrain.snapshot import FlySnapshot, SnapshotMismatch  # noqa: E402
@@ -100,7 +100,7 @@ def journey_off_because(args: argparse.Namespace) -> str | None:
 
 def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argparse.Namespace]:
     parser = argparse.ArgumentParser(description="A simulated fly brain plays Pokemon Red.")
-    parser.add_argument("--rom", type=Path, default=ROOT / "roms" / "pokemon_red.gb")
+    parser.add_argument("--rom", type=Path, default=None, help="default: the ROM in roms/")
     parser.add_argument("--neurons", type=int, default=2000, help="1000 to 5000")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--uncapped", action="store_true", help="run as fast as the CPU allows")
@@ -199,7 +199,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
 
     cfg = replace(
         Config(),
-        rom_path=args.rom,
+        rom_path=args.rom if args.rom is not None else find_rom(ROOT / "roms"),
         n_neurons=args.neurons,
         seed=args.seed,
         uncapped=args.uncapped,

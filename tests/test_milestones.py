@@ -276,7 +276,7 @@ def test_a_state_sidecar_carries_its_tick_offset(tmp_path):
     assert (tmp_path / "x.state.json").is_file()
 
 
-@pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present")
+@pytest.mark.skipif(not ROM.is_file(), reason="no ROM in roms/")
 @pytest.mark.skipif(not (ROOT / "states" / "bedroom.state").is_file(), reason="states/bedroom.state not present")
 def test_a_run_from_a_state_counts_game_time_from_its_offset(tmp_path):
     from flybrain.loop import run_loop
@@ -296,7 +296,7 @@ def test_a_run_from_a_state_counts_game_time_from_its_offset(tmp_path):
     assert ticks[0] == 1
 
 
-@pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present")
+@pytest.mark.skipif(not ROM.is_file(), reason="no ROM in roms/")
 @pytest.mark.skipif(not (ROOT / "states" / "bedroom.state").is_file(), reason="states/bedroom.state not present")
 def test_a_training_episode_starts_its_clock_at_the_state_offset(tmp_path):
     from flybrain.emulator import Emulator

@@ -129,7 +129,7 @@ def test_the_learning_curve_buckets_training_episodes():
     assert rows[1]["mean_reward"] > rows[0]["mean_reward"]
 
 
-@pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present")
+@pytest.mark.skipif(not ROM.is_file(), reason="no ROM in roms/")
 def test_every_tick_reaches_every_observer():
     cfg = replace(Config(), rom_path=ROM, headless=True, uncapped=True, hud=False, max_steps=400, seed=0)
     first, second = Recorder(), Recorder()
@@ -143,7 +143,7 @@ def test_every_tick_reaches_every_observer():
     assert isinstance(one.map_name, str) and isinstance(one.in_battle, bool)
 
 
-@pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present")
+@pytest.mark.skipif(not ROM.is_file(), reason="no ROM in roms/")
 @pytest.mark.skipif(
     not (Path(__file__).resolve().parent.parent / "states" / "bedroom.state").is_file(),
     reason="states/bedroom.state not present",
@@ -165,7 +165,7 @@ def test_a_short_training_run_writes_a_brain_and_a_csv(tmp_path):
     assert loaded.episodes_trained == 2
 
 
-@pytest.mark.skipif(not ROM.is_file(), reason="roms/pokemon_red.gb not present")
+@pytest.mark.skipif(not ROM.is_file(), reason="no ROM in roms/")
 def test_run_loop_loads_a_saved_brain_and_biases_with_it(tmp_path):
     """The other half of the contract's end-to-end check: a brain written by
     training is picked up by the watching loop and actually reaches the pools."""

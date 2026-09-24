@@ -1,5 +1,6 @@
 .venv/
-roms/
+roms/*
+!roms/README.md
 brains/
 states/
 runs/

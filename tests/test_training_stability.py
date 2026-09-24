@@ -465,7 +465,7 @@ def test_the_loop_writes_the_save_path_and_not_the_brain_it_loaded(tmp_path, mon
     from conftest import ROM
 
     if not ROM.is_file():
-        pytest.skip("roms/pokemon_red.gb not present")
+        pytest.skip("no ROM in roms/")
     from flybrain.loop import LoopOptions, run_loop
 
     cfg = replace(Config(), rom_path=ROM, headless=True, uncapped=True, hud=False, max_steps=30, seed=0)
