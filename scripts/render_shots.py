@@ -100,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     lines: list[str] = []
+    encoders: set[str] = set()
     for take in chosen:
         print(f"\n=== shot {take.number} ({take.slug}): \"{take.line}\"", flush=True)
         began = time.perf_counter()
@@ -116,9 +117,10 @@ def main(argv: list[str] | None = None) -> int:
             continue
         line = (
             f"shot {take.number} {result.path}: {result.seconds:.2f} s, {result.frames} frames, "
-            f"{result.size[0]}x{result.size[1]}, captured {result.capture_fps:.1f} fps "
-            f"({result.used} distinct), {wall:.0f} s wall"
+            f"{result.size[0]}x{result.size[1]}, {result.megabytes:.1f} MB, captured {result.capture_fps:.1f} fps "
+            f"({result.used} distinct), encoded in {result.catch_up:.1f} s after the take, {wall:.0f} s wall"
         )
+        encoders.add(result.encoder)
         if result.slow:
             line += "  <-- UNDER 50 FPS, WILL STUTTER"
         if result.error:
@@ -128,8 +130,11 @@ def main(argv: list[str] | None = None) -> int:
             lines.append("stopped early; the rest were not rendered")
             break
     total = time.perf_counter() - started
+    files = sum(1 for line in lines if line.startswith("shot "))
+    if encoders:
+        lines.append("encoder: " + ", ".join(sorted(encoders)))
     print("\n" + "\n".join(lines), flush=True)
-    print(f"total wall clock: {total:.0f} s ({total / 60:.1f} min) for {len(lines)} files", flush=True)
+    print(f"total wall clock: {total:.0f} s ({total / 60:.1f} min) for {files} files", flush=True)
     return 0
 
 

@@ -31,10 +31,13 @@ from flybrain.record import (
     client_key,
     connect,
     encode_client_frame,
+    ffmpeg_command,
+    ffmpeg_exe,
     find_browser,
     frame_indices,
     frame_size,
     handshake_request,
+    open_writer,
 )
 
 BUNDLED_ROM = Path(pyboy.__file__).resolve().parent / "default_rom.gb"
@@ -436,6 +439,72 @@ def test_a_take_whose_page_never_gets_a_frame_still_starts():
     assert began == [1]
 
 
+# ---------------------------------------------------------------- encoder ---
+
+
+def test_the_ffmpeg_call_pipes_raw_bgr_into_libx264():
+    command = ffmpeg_command("ffmpeg.exe", "out.mp4", (1080, 1920), 60, 23)
+    assert command[0] == "ffmpeg.exe" and command[-1] == "out.mp4"
+
+    def after(flag, start=0):
+        return command[command.index(flag, start) + 1]
+
+    # the input: raw BGR frames of exactly the file's size and rate, on stdin
+    assert after("-f") == "rawvideo"
+    assert after("-pix_fmt") == "bgr24"
+    assert after("-s") == "1080x1920"
+    assert after("-r") == "60"
+    assert after("-i") == "-"
+    # the output, after the input: H.264 in yuv420p, index at the front
+    output = command.index("-i")
+    assert after("-c:v", output) == "libx264"
+    assert after("-preset", output) == "veryfast"
+    assert after("-crf", output) == "23"
+    assert after("-pix_fmt", output) == "yuv420p"
+    assert after("-movflags", output) == "+faststart"
+    assert after("-r", output) == "60"
+    assert "-y" in command, "a re-render overwrites the old file instead of hanging on a prompt"
+    assert ffmpeg_command("f", "o.mp4", (1920, 1080), 30, 18)[command.index("-s") + 1] == "1920x1080"
+
+
+def test_the_encoder_falls_back_to_mp4v_without_imageio_ffmpeg(tmp_path):
+    import numpy as np
+
+    writer, name = open_writer(tmp_path / "fallback.mp4", (64, 48), 30, 23, exe="")
+    assert name.startswith("mp4v") and "imageio-ffmpeg" in name
+    writer.write(np.zeros((48, 64, 3), dtype=np.uint8))
+    writer.release()
+    assert (tmp_path / "fallback.mp4").stat().st_size > 0
+
+
+@pytest.mark.skipif(ffmpeg_exe() is None, reason="imageio-ffmpeg is not installed")
+def test_the_ffmpeg_writer_makes_a_file_opencv_can_read(tmp_path):
+    import cv2
+    import numpy as np
+
+    out = tmp_path / "x264.mp4"
+    writer, name = open_writer(out, (128, 96), 30, 23)
+    assert name.startswith("libx264 crf 23")
+    for index in range(30):
+        frame = np.zeros((96, 128, 3), dtype=np.uint8)
+        frame[:, index * 4 : index * 4 + 8] = 255
+        writer.write(frame)
+    writer.release()
+    capture = cv2.VideoCapture(str(out))
+    assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 30
+    ok, first = capture.read()
+    capture.release()
+    assert ok and first.shape == (96, 128, 3)
+
+
+def test_record_crf_is_checked_and_needs_record():
+    assert run.parse_args(["--record", "x.mp4", "--record-crf", "18"])[2].record_crf == 18
+    with pytest.raises(SystemExit):
+        run.parse_args(["--record", "x.mp4", "--record-crf", "60"])
+    with pytest.raises(SystemExit):
+        run.parse_args(["--record-crf", "18"])
+
+
 def test_a_slow_capture_is_reported_loudly():
     slow = RecordResult(path="x.mp4", fps=60, frames=600, captured=200)
     assert slow.slow and "UNDER 50" in slow.warning()
@@ -484,3 +553,8 @@ def test_three_seconds_of_the_scene_headless(tmp_path, monkeypatch):
     assert middle.mean() > 10, "not black"
     assert np.abs(middle.astype(int) - frames[0].astype(int)).mean() > 0.5, "the picture moves"
     assert not (tmp_path / "milestones").exists() and not (tmp_path / "journey").exists()
+    # Small enough to post: under 5 MB a second of video. OpenCV's mp4v writes
+    # about 17 MB a second at this size and fails this.
+    megabytes_per_second = out.stat().st_size / 1e6 / 3.0
+    assert megabytes_per_second < 5.0, f"{megabytes_per_second:.1f} MB/s from {result.encoder}"
+    assert result.encoder.startswith("libx264"), result.encoder

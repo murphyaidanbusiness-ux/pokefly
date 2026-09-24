@@ -11,7 +11,10 @@ the keyboard:
 
 Each row is one `run.py --record` run (README, "How to record"): headless Edge
 draws the couch scene at exactly 1080x1920, the frames come over the DevTools
-protocol, and a constant 60 fps mp4 lands in `shots/NN-<name>.mp4` (gitignored).
+protocol, and a constant 60 fps H.264 mp4 (libx264, crf 23, about 1.3 to 1.7
+MB a second) lands in `shots/NN-<name>.mp4` (gitignored). The whole list is
+about 230 MB and takes about six minutes, most of the extra over the takes'
+own length being the encode that runs after each take.
 Every shot gets a port of its own, so a `run.py --couch` of yours on 8765 can
 keep going while it renders. A take never writes: the journey shots (1, 2, 3,
 7, 8) play on from `saves/journey/` read only with learning frozen, and nothing

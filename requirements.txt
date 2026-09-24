@@ -2,4 +2,5 @@ pyboy>=2.0
 numpy
 pillow
 opencv-python
+imageio-ffmpeg>=0.6
 pytest

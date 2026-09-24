@@ -152,6 +152,12 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
     parser.add_argument("--record-fps", type=int, default=None, help="with --record, frames per second (default 60)")
     parser.add_argument("--browser", type=Path, default=None, help="with --record, the browser to render with")
     parser.add_argument(
+        "--record-crf",
+        type=int,
+        default=None,
+        help="with --record, libx264 quality: lower is better and bigger (default 23)",
+    )
+    parser.add_argument(
         "--scene-params",
         metavar="QUERY",
         default="",
@@ -171,8 +177,10 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, LoopOptions, argp
             parser.error("--seconds must be positive")
         if args.record_fps is not None and args.record_fps <= 0:
             parser.error("--record-fps must be positive")
-    elif args.seconds is not None or args.record_fps is not None or args.browser is not None:
-        parser.error("--seconds, --record-fps and --browser only mean something with --record")
+        if args.record_crf is not None and not 0 <= args.record_crf <= 51:
+            parser.error("--record-crf runs from 0 to 51")
+    elif any(value is not None for value in (args.seconds, args.record_fps, args.browser, args.record_crf)):
+        parser.error("--seconds, --record-fps, --record-crf and --browser only mean something with --record")
     if args.portrait:
         args.couch = True
     if args.replay is not None and not args.headless:
@@ -452,7 +460,8 @@ def run_with_couch(cfg: Config, options: LoopOptions, args: argparse.Namespace, 
 
         size = frame_size(args.portrait)
         recorder = Recorder(
-            cfg, url, args.record, args.seconds, fps=args.record_fps, size=size, browser=args.browser
+            cfg, url, args.record, args.seconds, fps=args.record_fps, size=size, browser=args.browser,
+            crf=args.record_crf,
         ).start()
         print(
             f"record: {args.record}, {args.seconds:g} s at {recorder.fps} fps, {size[0]}x{size[1]}; "

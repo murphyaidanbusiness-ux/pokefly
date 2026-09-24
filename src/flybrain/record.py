@@ -3,9 +3,11 @@
 `run.py --record out.mp4` and `scripts/render_shots.py` both come through
 here. A headless Edge (or Chrome) draws the page at exactly the size of the
 file, the Chrome DevTools Protocol hands every repaint over as a JPEG
-(`Page.startScreencast`), and `cv2.VideoWriter` turns them into a constant
-frame rate mp4. Stdlib plus the OpenCV this project already has: no ffmpeg,
-no OBS, no browser-automation package.
+(`Page.startScreencast`), and libx264 turns them into a constant frame rate
+H.264 mp4, through the ffmpeg binary the `imageio-ffmpeg` wheel ships (raw
+BGR frames down a pipe). Without that package it falls back to OpenCV's
+`mp4v` writer, which works but writes files about ten times the size. No
+OBS, no system ffmpeg, no browser-automation package.
 
 Four pieces, in the order a frame meets them:
 
@@ -455,6 +457,118 @@ def frame_indices(timestamps, fps: float, seconds: float | None = None) -> list[
     return out
 
 
+# ---------------------------------------------------------------- encoders ---
+
+
+def ffmpeg_command(
+    exe: str | Path, out: str | Path, size: tuple[int, int], fps: int, crf: int, preset: str = "veryfast"
+) -> list[str]:
+    """The ffmpeg call a take pipes its frames into: raw BGR at the file's
+    size and rate on stdin, H.264 (libx264, `crf`) in yuv420p out, with the
+    index at the front (`+faststart`) so a phone can play it while it loads."""
+    width, height = size
+    return [
+        str(exe),
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-f", "rawvideo",
+        "-pix_fmt", "bgr24",
+        "-s", f"{width}x{height}",
+        "-r", str(fps),
+        "-i", "-",
+        "-c:v", "libx264",
+        "-preset", preset,
+        "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-r", str(fps),
+        str(out),
+    ]
+
+
+class FfmpegWriter:
+    """libx264 through the ffmpeg binary imageio-ffmpeg ships. `write` takes
+    one BGR frame of exactly the file's size; `release` closes the pipe and
+    waits for ffmpeg to finish the file, and raises if it failed."""
+
+    def __init__(self, exe: str | Path, out: Path, size: tuple[int, int], fps: int, crf: int) -> None:
+        self.size = size
+        self.log = tempfile.TemporaryFile()
+        windows = sys.platform == "win32"
+        # Its own process group, like the browser: the Ctrl+C that ends a take
+        # must not kill the encoder halfway through the file. And below normal
+        # priority: at normal priority libx264's threads took the CPU from the
+        # browser and a take's capture rate fell from about 56 to 45 frames a
+        # second. Behind the spool the encoder can lag; the capture cannot.
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.BELOW_NORMAL_PRIORITY_CLASS if windows else 0
+        self.process = subprocess.Popen(
+            ffmpeg_command(exe, out, size, fps, crf),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=self.log,
+            creationflags=flags,
+            start_new_session=not windows,
+            preexec_fn=None if windows else (lambda: os.nice(5)),
+        )
+
+    def write(self, image) -> None:
+        self.process.stdin.write(image.tobytes())
+
+    def release(self) -> None:
+        try:
+            self.process.stdin.close()
+        except OSError:
+            pass
+        code = self.process.wait()
+        self.log.seek(0)
+        message = self.log.read().decode("utf-8", "replace").strip()
+        self.log.close()
+        if code != 0:
+            raise RecordError(f"ffmpeg exited with code {code}: {message[-300:] or 'no message'}")
+
+
+class Mp4vWriter:
+    """The fallback: OpenCV's own MPEG-4 part 2 writer. About 130 to 150
+    Mbit/s at 1080x1920 and 60 fps, and this OpenCV build ignores its
+    quality property, so it is only for a machine without imageio-ffmpeg.
+    (OpenCV's `avc1` is no way out: it opens, then finds no OpenH264 DLL.)"""
+
+    def __init__(self, out: Path, size: tuple[int, int], fps: int) -> None:
+        import cv2
+
+        self.writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), size)
+        if not self.writer.isOpened():
+            raise RecordError(f"cv2.VideoWriter could not open {out} for mp4v")
+
+    def write(self, image) -> None:
+        self.writer.write(image)
+
+    def release(self) -> None:
+        self.writer.release()
+
+
+def ffmpeg_exe() -> str | None:
+    """The ffmpeg binary from imageio-ffmpeg, or None without the package."""
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return None
+    try:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except RuntimeError:
+        return None
+
+
+def open_writer(out: Path, size: tuple[int, int], fps: int, crf: int, exe: str | None = None):
+    """(writer, what it is). libx264 when imageio-ffmpeg is installed, else
+    OpenCV's mp4v, said out loud in the take's line."""
+    exe = exe if exe is not None else ffmpeg_exe()
+    if exe:
+        return FfmpegWriter(exe, out, size, fps, crf), f"libx264 crf {crf} (imageio-ffmpeg)"
+    return Mp4vWriter(out, size, fps), "mp4v (OpenCV fallback: imageio-ffmpeg is not installed, files ~10x larger)"
+
+
 # ----------------------------------------------------------------- browser ---
 
 BROWSER_PATHS = (
@@ -634,6 +748,8 @@ class RecordResult:
     page_fps: float = 0.0  # the page's own draw rate before the take
     wall: float = 0.0  # seconds from launch to a closed file
     catch_up: float = 0.0  # seconds from the end of the take to a closed file
+    encoder: str = ""  # what wrote the file: libx264 or the mp4v fallback
+    bytes: int = 0  # the file's size once closed
     early: bool = False  # stopped before the take was long enough
     error: str | None = None
     min_fps: float = 50.0
@@ -648,13 +764,22 @@ class RecordResult:
         return self.captured / self.seconds if self.seconds else 0.0
 
     @property
+    def megabytes(self) -> float:
+        return self.bytes / 1e6
+
+    @property
+    def mb_per_second(self) -> float:
+        return self.megabytes / self.seconds if self.seconds else 0.0
+
+    @property
     def slow(self) -> bool:
         return self.frames > 0 and self.capture_fps < self.min_fps
 
     def line(self) -> str:
         width, height = self.size
         text = (
-            f"{self.path}: {self.seconds:.2f} s, {self.frames} frames at {self.fps} fps, {width}x{height}; "
+            f"{self.path}: {self.seconds:.2f} s, {self.frames} frames at {self.fps} fps, {width}x{height}, "
+            f"{self.megabytes:.1f} MB ({self.mb_per_second:.2f} MB/s) by {self.encoder or '?'}; "
             f"captured {self.captured} frames from the browser = {self.capture_fps:.1f} fps "
             f"({self.used} used, {self.dropped} dropped); WebGL {self.webgl or '?'} ({self.renderer or '?'}), "
             f"page drew {self.page_fps:.0f} fps before the take; {self.wall:.1f} s wall clock "
@@ -695,8 +820,10 @@ class Recorder:
         size: tuple[int, int] = PORTRAIT_SIZE,
         browser: str | Path | None = None,
         say: Callable[[str], None] | None = None,
+        crf: int | None = None,
     ) -> None:
         self.cfg = cfg
+        self.crf = cfg.couch_record_crf if crf is None else int(crf)
         self.url = url
         self.out = Path(out)
         self.seconds = float(seconds)
@@ -905,28 +1032,26 @@ class Recorder:
         """The take, in three stages on three threads, so nothing that is
         slow can hold the capture up:
 
-        - here: each capture's JPEG is appended to a spool file as it comes
-          and the pacer decides which slots it fills. When the take is long
-          enough `take_over` is set (the game loop ends on it), the browser
-          is shut, and the rest is catching up.
-        - a decoder: JPEG to pixels, only for captures the file uses.
-        - an encoder: pixels into the mp4, each as many times as the pacer
-          said. cv2 lets go of the GIL in both, so they overlap each other.
+        - here: each capture's JPEG is appended to a spool file on disk as it
+          comes (about 0.3 MB each) and the pacer decides which slots it
+          fills. When the take is long enough `take_over` is set (the game
+          loop ends on it) and the browser is shut.
+        - a decoder: JPEG to pixels, only for captures the file uses. It
+          waits for `take_over`, so the capture has the CPU to itself.
+        - an encoder: pixels into libx264 (or mp4v), each as many times as
+          the pacer said. cv2 and the pipe let go of the GIL, so the decoder
+          and the encoder overlap.
 
-        Measured here with the browser and the game on the same CPU, the
-        two together manage about 37 frames a second at 1080x1920, under
-        the 60 a take arrives at; without the spool the backlog would sit in
-        memory and a 30 s take would lose frames. With it, the file just
-        finishes a little after the take does.
+        So a take ends on time and the file finishes after it: measured here,
+        about 0.85 s of encoding per second of 1080x1920 60 fps video. The
+        take's line says how long (`catch_up`).
         """
         import cv2
         import numpy as np
 
         width, height = self.size
         self.out.parent.mkdir(parents=True, exist_ok=True)
-        writer = cv2.VideoWriter(str(self.out), cv2.VideoWriter_fourcc(*"mp4v"), float(self.fps), (width, height))
-        if not writer.isOpened():
-            raise RecordError(f"cv2.VideoWriter could not open {self.out} for mp4v")
+        writer, self.result.encoder = open_writer(self.out, self.size, self.fps, int(self.crf))
         spool = tempfile.TemporaryFile(prefix="flybrain-take-")
         spool_lock = threading.Lock()
         plan: queue.Queue = queue.Queue()  # (offset, length, count), then None
@@ -935,6 +1060,12 @@ class Recorder:
 
         def decoder() -> None:
             try:
+                # Nothing is decoded or encoded until the take is over. Doing it
+                # alongside cost the capture: 47 frames a second instead of 57
+                # on a 10 s take here, and the game fell to 58 ticks a second,
+                # because libx264's threads and the browser want the same
+                # cores. Afterwards the encoder has the machine to itself.
+                self.take_over.wait()
                 while True:
                     item = plan.get()
                     if item is None:
@@ -964,8 +1095,12 @@ class Recorder:
                 try:
                     for _ in range(count):
                         writer.write(image)
-                except cv2.error as error:
-                    failed.append(str(error))
+                except (cv2.error, OSError, ValueError) as error:
+                    # A dead ffmpeg (broken pipe) says why in release().
+                    failed.append(str(error) or type(error).__name__)
+                    while decoded.get() is not None:
+                        pass  # keep draining so the decoder never blocks
+                    return
 
         threads = [
             threading.Thread(target=decoder, name="record-decode", daemon=True),
@@ -1029,8 +1164,15 @@ class Recorder:
             self._close()
             for thread in threads:
                 thread.join()
-            writer.release()
+            try:
+                writer.release()
+            except RecordError as error:
+                failed.insert(0, str(error))
             spool.close()
+            try:
+                self.result.bytes = self.out.stat().st_size
+            except OSError:
+                self.result.bytes = 0
             self.result.catch_up = time.perf_counter() - took
             if failed:
                 self.result.error = f"the encoder failed: {failed[0]}"
@@ -1060,11 +1202,12 @@ def record(
     size: tuple[int, int] = PORTRAIT_SIZE,
     browser: str | Path | None = None,
     say: Callable[[str], None] | None = None,
+    crf: int | None = None,
 ) -> RecordResult:
     """Record `seconds` of the page at `url` into `out`, blocking. The page
     has to be served already (a running couch server). Ctrl+C finishes the
     file where it is and returns."""
-    recorder = Recorder(cfg, url, out, seconds, fps=fps, size=size, browser=browser, say=say).start()
+    recorder = Recorder(cfg, url, out, seconds, fps=fps, size=size, browser=browser, say=say, crf=crf).start()
     try:
         recorder.wait_ready()
         recorder.begin()

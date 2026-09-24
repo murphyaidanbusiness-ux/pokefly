@@ -275,6 +275,11 @@ class Config:
     couch_record_tail: float = 5.0  # a replay's take runs this long after the
     # milestone lands, so the flash is in it
     couch_record_quality: int = 90  # the browser's JPEG quality per frame
+    couch_record_crf: int = 23  # libx264's constant rate factor: lower is
+    # better and bigger. Measured on 10 s takes of the fly close-up at
+    # 1080x1920/60: crf 18 9.6 MB/s, 20 6.8, 21 5.1, 22 3.3, 23 1.7. The
+    # scene's film grain is what the low numbers spend their bits on; 23
+    # keeps every edge and smooths the grain.
     couch_record_min_fps: float = 50.0  # a capture rate under this is
     # reported loudly: a 60 fps file made of fewer captures stutters
     couch_record_lead: float = 0.15  # seconds between the first game frame

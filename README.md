@@ -90,6 +90,7 @@ episode that score came from. `--naive` ignores it.
 | `--record OUT.mp4` | render the couch scene to a file in headless Edge or Chrome: 1080x1920 with `--portrait`, 1920x1080 without. Implies `--couch` with no browser tab and no SDL window; the HUD stays. A take writes no journey save and nothing under `milestones/` (see "How to record") |
 | `--seconds N` | with `--record`, the take's length: default 20, or for a `--replay` the replay's own length plus 5 s so the flash is in it |
 | `--record-fps N` | with `--record`, frames per second in the file (default 60; 30 for a lighter file) |
+| `--record-crf N` | with `--record`, libx264's quality, 0 to 51: lower is better and bigger (default 23; see "How to record") |
 | `--browser PATH` | with `--record`, the browser to render with (default: Edge, then Chrome, wherever they are installed) |
 | `--scene-params QUERY` | extra query parameters for the scene page, such as `view=4&clean=1` (see "Portrait mode" and "How to record") |
 
@@ -319,9 +320,14 @@ device pixel ratio 1 (`Emulation.setDeviceMetricsOverride`), and takes every
 repaint as a JPEG over the DevTools protocol (`Page.startScreencast`, quality
 90), acknowledging each one the moment it arrives. `src/flybrain/record.py`
 holds all of it: the client half of the WebSocket (the server half was already
-in `couch.py`), a small JSON-RPC client, and the pacer. No new dependency: the
-file is written by the OpenCV the project already had (`cv2.VideoWriter`,
-`mp4v`).
+in `couch.py`), a small JSON-RPC client, and the pacer. The file is H.264
+from libx264, through the ffmpeg binary that the `imageio-ffmpeg` wheel ships
+(BSD-2, in `requirements.txt`; no system ffmpeg): raw BGR frames go down a
+pipe into `-c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p -movflags
++faststart`. Without `imageio-ffmpeg` the take falls back to OpenCV's own
+`mp4v` writer and says so in its line; that works, but at 130 to 150 Mbit/s
+(a 20 s take is 340 MB). OpenCV's `avc1` is no way round it here: it opens,
+then finds no OpenH264 DLL.
 
 - **Constant frame rate.** The browser sends a frame whenever the page
   repaints, near 60 a second but never exactly. The file gets exactly
@@ -339,11 +345,15 @@ file is written by the OpenCV the project already had (`cv2.VideoWriter`,
   the first game frame reaches the page, so a replay's take opens on its
   first second and no take opens on the TV's static. The loop keeps its 60 Hz
   pacing throughout and stops when the take is long enough.
-- **Encoding never holds the capture up.** Each capture's JPEG goes to a spool
-  file as it arrives; one thread decodes and another encodes behind it. With
-  the browser and the game on the same CPU the two manage about 37 frames a
-  second at 1080x1920, so the file finishes a few seconds after the take does
-  (the take's own line says how long).
+- **Encoding waits for the take.** Each capture's JPEG goes to a spool file
+  on disk as it arrives (about 0.3 MB each, so a 30 s take spools about
+  500 MB to the temp folder and deletes it after). Only when the take is over
+  are they decoded and piped to libx264, which runs below normal priority.
+  Encoding alongside the capture was tried and cost it: 47 captures a second
+  instead of 57 on a 10 s take, and the game fell to 58 ticks a second,
+  because libx264's threads and the browser want the same cores. So the take
+  ends on time and the file finishes after it, about 0.8 s of encoding per
+  second of video here (the take's own line says how long).
 - **Ctrl+C** ends the take where it is and closes the file properly; the
   browser runs in its own process group, so the Ctrl+C does not reach it.
 - **A take writes nothing.** A journey take plays on from `saves/journey/`
@@ -352,16 +362,21 @@ file is written by the OpenCV the project already had (`cv2.VideoWriter`,
   replay folders. `--save-state` and `--save-brain` still do what they say.
 - **Its own port.** Pass `--couch-port` to render while a `run.py --couch` of
   yours holds 8765; `scripts/render_shots.py` picks a free port per shot.
-- **The files are big.** OpenCV writes `mp4v` at about 130 to 150 Mbit/s at
-  1080x1920 and 60 fps (a 20 s take is about 340 MB, the 30 s fly close-up
-  600 MB), and this build ignores `VIDEOWRITER_PROP_QUALITY` on that codec, so
-  there is no knob short of another encoder. `--record-fps 30` halves it.
-  Instagram re-encodes whatever it gets.
+- **Size and quality.** `--record-crf N` (config `couch_record_crf`, default
+  23, libx264's own default) is the knob: lower is better and bigger. Measured
+  on 10 s takes of the fly close-up at 1080x1920 and 60 fps: crf 18 9.6 MB/s,
+  20 6.8, 21 5.1, 22 3.3, 23 1.7. The scene's film grain is what the low
+  numbers spend their bits on; at 23 every edge, facet and bristle holds and
+  the grain is smoothed. Instagram re-encodes whatever it gets.
 
 Measured here (i7-11700F, RTX 3060 Ti), the whole shot list with
-`scripts/render_shots.py`: nine files, 162 s of video, 4.4 minutes of wall
-clock, every take captured at 54 to 58 frames a second with none dropped, and
-each of the three replays landed on the tick it was recorded at.
+`scripts/render_shots.py`: nine files, 162 s of video, 227 MB in all (10 to
+51 MB a file, 1.2 to 1.7 MB a second), 5.7 minutes of wall clock. Every take
+captured at 55 to 57 frames a second with none dropped, the game held 60.0
+ticks a second and ended within 0.25 s of each take, the encode after each
+take ran 0.73 to 0.89 s per second of video, and each of the three replays
+landed on the tick it was recorded at. The same list in OpenCV's `mp4v` was
+2.9 GB.
 
 WebGL in headless Edge here: the GPU path (`--use-angle=default
 --ignore-gpu-blocklist` on top of `--headless=new --disable-gpu-vsync
@@ -1084,7 +1099,7 @@ are the reasons, not excuses:
 & .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-271 tests, all headless, about a minute and a half. They pass with no ROM
+275 tests, all headless, about a minute and a half. They pass with no ROM
 present; the handful that need one skip when `roms/pokemon_red.gb` is absent,
 and the short training test also needs `states/bedroom.state`.
 `tests/test_emulator.py` and `tests/test_run.py` run the real emulator on the
@@ -1173,4 +1188,6 @@ And for the learning half:
 
 ## Licence and dependencies
 
-`pyboy`, `numpy`, `pillow`, `opencv-python`; `pytest` for tests. Nothing else.
+`pyboy`, `numpy`, `pillow`, `opencv-python`, `imageio-ffmpeg` (BSD-2; it
+ships the ffmpeg binary `run.py --record` encodes with, and a take falls back
+to OpenCV without it); `pytest` for tests. Nothing else.
